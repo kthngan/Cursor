@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +24,24 @@ BASE_DIR = Path(__file__).resolve().parent
 WORKSPACE_DIR = BASE_DIR.parent
 OUTPUT_DIR = WORKSPACE_DIR / "Data" / "SportsAPI"
 SUMMARY_PATH = OUTPUT_DIR / "_export_summary.csv"
+MAX_WORKERS = int(os.environ.get("STATSCORE_EXPORT_WORKERS", "6"))
 
 
-def get_json(url: str) -> dict[str, Any]:
+def get_json(url: str, retries: int = 3) -> dict[str, Any]:
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=45) as response:
-        return json.loads(response.read().decode())
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                return json.loads(response.read().decode())
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == retries - 1:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+        except TimeoutError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    raise RuntimeError("unreachable")
 
 
 def authenticate() -> str:
@@ -115,6 +128,66 @@ def write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def read_existing_summary(path: Path, event: dict[str, Any]) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    last_row: dict[str, Any] | None = None
+    row_count = 0
+    with path.open(encoding="utf-8", newline="") as file:
+        reader = csv.DictReader(file)
+        if "event_time" not in (reader.fieldnames or []):
+            return None
+        for row in reader:
+            row_count += 1
+            last_row = row
+    if not last_row:
+        return None
+    return {
+        "event_id": event.get("id", ""),
+        "event_name": event.get("name", ""),
+        "start_date": event.get("start_date", ""),
+        "coverage_type": event.get("coverage_type", ""),
+        "event_stats_lvl_live": event.get("event_stats_lvl_live", ""),
+        "incident_rows": row_count,
+        "output_file": str(path),
+        "match_winner_name": last_row.get("match_winner_name", ""),
+        "match_winner_side": last_row.get("match_winner_side", ""),
+    }
+
+
+def process_event(token: str, event_id: int, candidate_event: dict[str, Any]) -> dict[str, Any] | None:
+    output_path = OUTPUT_DIR / f"{event_id}.csv"
+    existing_summary = read_existing_summary(output_path, candidate_event)
+    if existing_summary:
+        existing_summary["status"] = "existing"
+        return existing_summary
+
+    event = fetch_event_show(token, event_id)
+    if not event:
+        return None
+    incidents = event.get("events_incidents", [])
+    if not incidents:
+        return None
+    rows = compute_rolling_metric_rows(event)
+    if not rows:
+        return None
+
+    write_rows(output_path, rows)
+    last_row = rows[-1]
+    return {
+        "event_id": event_id,
+        "event_name": event.get("name", ""),
+        "start_date": event.get("start_date", ""),
+        "coverage_type": event.get("coverage_type", ""),
+        "event_stats_lvl_live": event.get("event_stats_lvl_live", ""),
+        "incident_rows": len(rows),
+        "output_file": str(output_path),
+        "match_winner_name": last_row.get("match_winner_name", ""),
+        "match_winner_side": last_row.get("match_winner_side", ""),
+        "status": "written",
+    }
+
+
 def main() -> int:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     token = authenticate()
@@ -137,47 +210,42 @@ def main() -> int:
         ]
         for event in finished_events:
             candidate_events[int(event["id"])] = event
-        print(f"  season {season_id}: {len(events)} events, {len(finished_events)} finished with scoutsfeed")
+        print(f"  season {season_id}: {len(events)} events, {len(finished_events)} finished with scoutsfeed", flush=True)
 
-    print(f"Unique candidate matches: {len(candidate_events)}")
+    print(f"Unique candidate matches: {len(candidate_events)}", flush=True)
     summary_rows: list[dict[str, Any]] = []
 
-    for index, event_id in enumerate(sorted(candidate_events), start=1):
-        event = fetch_event_show(token, event_id)
-        if not event:
-            continue
-        incidents = event.get("events_incidents", [])
-        if not incidents:
-            continue
-        rows = compute_rolling_metric_rows(event)
-        if not rows:
-            continue
-
-        output_path = OUTPUT_DIR / f"{event_id}.csv"
-        write_rows(output_path, rows)
-        last_row = rows[-1]
-        summary_rows.append(
-            {
-                "event_id": event_id,
-                "event_name": event.get("name", ""),
-                "start_date": event.get("start_date", ""),
-                "coverage_type": event.get("coverage_type", ""),
-                "event_stats_lvl_live": event.get("event_stats_lvl_live", ""),
-                "incident_rows": len(rows),
-                "output_file": str(output_path),
-                "match_winner_name": last_row.get("match_winner_name", ""),
-                "match_winner_side": last_row.get("match_winner_side", ""),
-            }
-        )
-        print(f"  [{index}/{len(candidate_events)}] wrote {output_path.name} ({len(rows)} rows)")
-        time.sleep(0.05)
+    event_items = sorted(candidate_events.items())
+    completed = 0
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {
+            executor.submit(process_event, token, event_id, event): event_id
+            for event_id, event in event_items
+        }
+        for future in as_completed(futures):
+            completed += 1
+            event_id = futures[future]
+            try:
+                summary = future.result()
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [{completed}/{len(event_items)}] failed {event_id}: {exc}", flush=True)
+                continue
+            if summary:
+                status = summary.pop("status", "written")
+                summary_rows.append(summary)
+                print(
+                    f"  [{completed}/{len(event_items)}] {status} {event_id}.csv ({summary['incident_rows']} rows)",
+                    flush=True,
+                )
+            else:
+                print(f"  [{completed}/{len(event_items)}] skipped {event_id}", flush=True)
 
     if summary_rows:
         write_rows(SUMMARY_PATH, summary_rows)
 
-    print(f"Matches exported: {len(summary_rows)}")
-    print(f"Output directory: {OUTPUT_DIR}")
-    print(f"Summary: {SUMMARY_PATH}")
+    print(f"Matches exported: {len(summary_rows)}", flush=True)
+    print(f"Output directory: {OUTPUT_DIR}", flush=True)
+    print(f"Summary: {SUMMARY_PATH}", flush=True)
     return 0
 
 

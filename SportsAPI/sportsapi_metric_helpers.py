@@ -222,6 +222,7 @@ def compute_rolling_metric_rows(event: dict[str, Any], point_window_size: int = 
                 "utc_time": unix_to_utc(incident.get("ut")),
                 "event_status_id": incident.get("event_status_id", ""),
                 "event_status_name": incident.get("event_status_name", ""),
+                "event_time": incident.get("event_time", ""),
                 "incident_id": incident.get("incident_id", ""),
                 "incident_name": incident_name,
                 "participant_side": side_for_counter(participant_counter),
