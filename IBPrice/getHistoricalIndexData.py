@@ -23,6 +23,7 @@ from pathlib import Path
 from ib_insync import IB, Index, util
 
 INFO_ERROR_CODES = frozenset({2104, 2106, 2119, 2158})
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "IBPrice"
 
 
 @dataclass
@@ -54,8 +55,8 @@ def parse_args() -> AppConfig:
     )
     parser.add_argument(
         "--out-file",
-        default="historicalData/hsi_index_daily.csv",
-        help="Output CSV path (default: historicalData/hsi_index_daily.csv)",
+        default=str(DATA_DIR / "historicalData" / "hsi_index_daily.csv"),
+        help=f"Output CSV path (default: {DATA_DIR / 'historicalData' / 'hsi_index_daily.csv'})",
     )
     parser.add_argument(
         "--use-rth",
@@ -67,10 +68,9 @@ def parse_args() -> AppConfig:
 
     parsed_start = datetime.strptime(args.start_date, "%Y-%m-%d").date()
 
-    script_dir = Path(__file__).resolve().parent
     out_file = Path(args.out_file)
     if not out_file.is_absolute():
-        out_file = script_dir / out_file
+        out_file = DATA_DIR / out_file
 
     return AppConfig(
         host=args.host,

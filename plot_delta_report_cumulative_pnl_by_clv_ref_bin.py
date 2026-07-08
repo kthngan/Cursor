@@ -11,8 +11,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-JSON_PATH = Path(r"C:\Users\user\Downloads\delta_report_2026-04-09T03-51-31.json")
-OUT_DIR = Path(r"c:\Users\user\Documents\Cursor")
+DATA_DIR = Path(__file__).resolve().parent / "Data" / "deltaReportOld"
+JSON_PATH = DATA_DIR / "delta_report_public.json"
+OUT_DIR = DATA_DIR
 OUT_FILE = OUT_DIR / "delta_report_settle_pnl_cumulative_by_clv_ref_bin.png"
 
 BIN_WIDTH = 0.2  # merge pairs of 0.1-wide CLV Ref buckets

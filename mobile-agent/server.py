@@ -9,7 +9,8 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 load_dotenv()
 
-WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", r"C:\Users\user\Documents\Cursor")).resolve()
+DEFAULT_WORKSPACE = Path(__file__).resolve().parent.parent
+WORKSPACE = Path(os.environ.get("WORKSPACE_DIR") or DEFAULT_WORKSPACE).resolve()
 API_KEY = os.environ.get("CURSOR_API_KEY", "")
 ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN", "")
 PORT = int(os.environ.get("PORT", "8787"))

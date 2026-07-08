@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import os
 import re
 import sys
 import urllib.parse
@@ -21,8 +22,8 @@ from playwright.sync_api import sync_playwright
 from matchPositionScrap import get_match_position
 
 PNL_HISTORY_URL = "https://poly-pnl.it9.win/pnl-history-v3"
-USERNAME = "mm"
-PASSWORD = "2047"
+USERNAME = os.environ.get("POLY_PNL_USERNAME", "")
+PASSWORD = os.environ.get("POLY_PNL_PASSWORD", "")
 DEFAULT_WALLET_LABEL = "algo 15"
 ALGO_15_WALLET = "0x84AD9c5C547A82EC9a08547b94bD922446e5BfB7"
 V6_BASE = "https://poly-pnl.it9.win/market-pnl-v6"
@@ -36,7 +37,7 @@ RESULT_COLUMNS = [
     "P=I Max |Net|",
     "Error",
 ]
-DEFAULT_CSV = Path(__file__).resolve().parent / "position" / "position_scraping_results.csv"
+DEFAULT_CSV = Path(__file__).resolve().parent / "Data" / "position" / "position_scraping_results.csv"
 
 
 @dataclass

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -15,8 +16,8 @@ from dataclasses import dataclass
 from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://poly-pnl.it9.win/market-pnl-v6"
-USERNAME = "mm"
-PASSWORD = "2047"
+USERNAME = os.environ.get("POLY_PNL_USERNAME", "")
+PASSWORD = os.environ.get("POLY_PNL_PASSWORD", "")
 
 SPORT_ID_TO_NAME = {
     1: "Baseball",

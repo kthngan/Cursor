@@ -316,7 +316,8 @@ def render_html(
 
 
 def main() -> None:
-    default_input = r"C:\Users\user\Downloads\delta_report_2026-03-31T12-29-35"
+    data_dir = Path(__file__).resolve().parent.parent / "Data" / "deltaReportOld"
+    default_input = str(data_dir / "delta_report_public.json")
     parser = argparse.ArgumentParser(
         description="Create cumulative settlePnL HTML report from delta report JSON."
     )

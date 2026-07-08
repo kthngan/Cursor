@@ -15,6 +15,7 @@ SECRET_KEY = os.environ.get("STATSCORE_SECRET_KEY", "")
 BASE_URL = "https://api.statscore.com/v2"
 SPORT_ID = 4
 EVENT_ID = 6571587
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "SportsAPI"
 
 
 def get_json(url: str) -> dict[str, Any]:
@@ -141,7 +142,8 @@ def main() -> int:
         "sports_show_incidents": names(incidents),
     }
 
-    output = Path(__file__).resolve().parent / "tennis_live_availability_summary.json"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    output = DATA_DIR / "tennis_live_availability_summary.json"
     output.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print(json.dumps(summary["sport"], indent=2))

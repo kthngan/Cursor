@@ -4,7 +4,7 @@ Download private-trade-analysis table rows per day and save as JSON.
 Each day T is queried as a single window from 3pm local on T through 3pm local
 on T+1, and saved as ``{T}.json`` (ISO date).
 
-Adjusts the requested date range against existing files in ./json:
+Adjusts the requested date range against existing files in Data/deltaReportPrivate/json:
   - Skips re-fetching days before the latest file date.
   - Starts at max(user_start, latest_existing_date) so boundary day is refreshed.
 
@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import sys
 import time
@@ -26,8 +27,9 @@ from playwright.sync_api import expect
 from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://poly-pnl.it9.win/private-trade-analysis"
-USERNAME = "mm"
-PASSWORD = "2047"
+USERNAME = os.environ.get("POLY_PNL_USERNAME", "")
+PASSWORD = os.environ.get("POLY_PNL_PASSWORD", "")
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "deltaReportPrivate"
 
 # Human-readable labels for desired "Group By" toggles.
 GROUP_BY_ON = frozenset(
@@ -428,7 +430,7 @@ def main() -> int:
         "--json-dir",
         type=Path,
         default=None,
-        help="Directory for YYYY-MM-DD.json (default: ./json next to this script)",
+        help=f"Directory for YYYY-MM-DD.json (default: {DATA_DIR / 'json'})",
     )
     parser.add_argument("--headed", action="store_true", help="Show browser window")
     parser.add_argument("--timeout", type=int, default=300_000, help="Timeout ms (default 300000)")
@@ -444,7 +446,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    json_dir = (args.json_dir or (script_dir() / "json")).resolve()
+    json_dir = (args.json_dir or (DATA_DIR / "json")).resolve()
     json_dir.mkdir(parents=True, exist_ok=True)
 
     if args.refetch_existing:

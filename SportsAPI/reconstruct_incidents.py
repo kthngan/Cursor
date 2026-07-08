@@ -23,6 +23,7 @@ CLIENT_ID = os.environ.get("STATSCORE_CLIENT_ID", "")
 SECRET_KEY = os.environ.get("STATSCORE_SECRET_KEY", "")
 BASE_URL = "https://api.statscore.com/v2"
 DEFAULT_EVENT_ID = "6571587"
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "SportsAPI"
 
 
 def get_json(url: str) -> dict[str, Any]:
@@ -168,7 +169,8 @@ def print_table(rows: list[dict[str, Any]], limit: int = 40) -> None:
 
 def main() -> int:
     event_id = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_EVENT_ID
-    output_dir = Path(__file__).resolve().parent
+    output_dir = DATA_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     token = authenticate()
     event = fetch_event(event_id, token)

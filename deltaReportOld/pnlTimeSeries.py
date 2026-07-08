@@ -7,7 +7,7 @@ Requires: playwright, matplotlib
   python -m playwright install chromium
 
 Examples:
-  python pnlTimeSeries.py --start 2026-03-01T00:00 --end 2026-04-05T23:59 --outdir .
+  python pnlTimeSeries.py --start 2026-03-01T00:00 --end 2026-04-05T23:59 --outdir ../Data/deltaReportOld
     Fetches in batches (--batch-days, default 5), merges in memory, no cache JSON.
 
   python pnlTimeSeries.py --input-json delta_report_....json --outdir .
@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import re
 from collections import defaultdict
 from datetime import datetime, time, timedelta
@@ -28,8 +29,9 @@ from playwright.sync_api import sync_playwright
 
 DEFAULT_REPORT_URL = "https://poly-pnl.it9.win/delta-report-v3"
 PUBLIC_REPORT_URL = "https://poly-pnl.it9.win/trade-markout"
-DEFAULT_HTTP_AUTH_USERNAME = "mm"
-DEFAULT_HTTP_AUTH_PASSWORD = "2047"
+DEFAULT_HTTP_AUTH_USERNAME = os.environ.get("POLY_PNL_USERNAME", "")
+DEFAULT_HTTP_AUTH_PASSWORD = os.environ.get("POLY_PNL_PASSWORD", "")
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "deltaReportOld"
 # Trade-markout "algo0" wallet alias in JSON payloads.
 PUBLIC_ALGO0_USER_ID = 1771
 # Filename excluded when picking newest `delta_report*.json` (legacy full export name).
@@ -1531,7 +1533,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--outdir",
-        default=str(Path(__file__).resolve().parent),
+        default=str(DATA_DIR),
         help="Output directory.",
     )
     p.add_argument(

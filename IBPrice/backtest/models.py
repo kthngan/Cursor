@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
+
+
+DATA_DIR = Path(__file__).resolve().parents[2] / "Data" / "IBPrice"
 
 
 class FillModel(str, Enum):
@@ -13,9 +17,9 @@ class FillModel(str, Enum):
 @dataclass
 class BacktestConfig:
     symbol: str = "HSI"
-    data_dir: str = "historicalData"
-    index_file: str = "historicalData/hsi_index_daily.csv"
-    output_dir: str = "backtest_output"
+    data_dir: str = str(DATA_DIR / "historicalData")
+    index_file: str = str(DATA_DIR / "historicalData" / "hsi_index_daily.csv")
+    output_dir: str = str(DATA_DIR / "backtest_output")
     vwap_threshold: float = 0.003
     max_vwap_threshold: float = 0.007
     threshold_step: float = 0.001

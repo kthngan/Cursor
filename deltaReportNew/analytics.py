@@ -16,8 +16,9 @@ from typing import Any, Iterable, Sequence
 import pandas as pd
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-DEFAULT_REPORTS_DIR = PACKAGE_DIR / "Reports"
-DEFAULT_JSON_DIR = PACKAGE_DIR / "JSON"
+DATA_DIR = PACKAGE_DIR.parent / "Data" / "deltaReportNew"
+DEFAULT_REPORTS_DIR = DATA_DIR / "Reports"
+DEFAULT_JSON_DIR = DATA_DIR / "json"
 DEFAULT_OUTPUT = DEFAULT_REPORTS_DIR / "report.html"
 DEFAULT_MARKET_OUTPUT = DEFAULT_REPORTS_DIR / "market_report.html"
 
@@ -102,8 +103,8 @@ SUMMARY_COL_PNL = "PnL USD"
 SUMMARY_COL_TURNOVER = "Turnover USD"
 SUMMARY_COL_ROT = "Return On Turnover %"
 
-UNIFIED_LEAGUES_CSV = PACKAGE_DIR / "unified_leagues.csv"
-UNIFIED_MARKETS_CSV = PACKAGE_DIR / "unified_markets.csv"
+UNIFIED_LEAGUES_CSV = DATA_DIR / "unified_leagues.csv"
+UNIFIED_MARKETS_CSV = DATA_DIR / "unified_markets.csv"
 SOCCER_NAME = "Soccer"
 
 # Market report: collapse default algo accounts into one row label.

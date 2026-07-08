@@ -8,7 +8,7 @@ Behavior:
    - TRADES (last price, VWAP, total volume)
    - BID (bid price)
    - ASK (offer price)
-4) Save one CSV per date under IBPrice/historicalData/.
+4) Save one CSV per date under Data/IBPrice/historicalData/.
 
 Example:
   python getHistoricalData.py --date 2026-01-01
@@ -30,6 +30,7 @@ from ib_insync import Future, IB, util
 
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
 INFO_ERROR_CODES = frozenset({2104, 2106, 2119, 2158})
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "IBPrice"
 
 
 @dataclass
@@ -62,8 +63,8 @@ def parse_args() -> AppConfig:
     )
     parser.add_argument(
         "--out-dir",
-        default="historicalData",
-        help="Output folder for CSV files (default: historicalData)",
+        default=str(DATA_DIR / "historicalData"),
+        help=f"Output folder for CSV files (default: {DATA_DIR / 'historicalData'})",
     )
     parser.add_argument("--verbose", action="store_true", help="Print more diagnostics")
     args = parser.parse_args()
@@ -344,8 +345,7 @@ def main() -> None:
     start_hk, end_hk = date_window_hk(cfg.date_str)
     target_date = start_hk.date()
 
-    script_dir = Path(__file__).resolve().parent
-    out_dir = cfg.out_dir if cfg.out_dir.is_absolute() else script_dir / cfg.out_dir
+    out_dir = cfg.out_dir if cfg.out_dir.is_absolute() else DATA_DIR / cfg.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"{cfg.date_str}.csv"
 

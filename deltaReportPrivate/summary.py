@@ -20,6 +20,8 @@ from typing import Any
 
 import pandas as pd
 
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "deltaReportPrivate"
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from deltaReportNew.analytics import (
@@ -1133,14 +1135,14 @@ def main() -> int:
     parser.add_argument(
         "--json-dir",
         type=Path,
-        default=script_dir() / "json",
+        default=DATA_DIR / "json",
         help="Folder with YYYY-MM-DD.json from private downloadData.py.",
     )
     parser.add_argument(
         "-o",
         "--output",
         type=Path,
-        default=script_dir() / "Reports" / "summary.html",
+        default=DATA_DIR / "Reports" / "summary.html",
         help="Output HTML path.",
     )
     args = parser.parse_args()

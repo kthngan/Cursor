@@ -557,12 +557,16 @@ PER_SPORT_GROUPBYS_SOCCER: list[str | None] = [
 def script_dir() -> Path:
     if getattr(sys, "frozen", False):
         # Prefer current working directory if launched via shortcut with "Start in"
-        # pointing to the project folder (contains json/downloadData.py).
+        # pointing to the project folder (contains downloadData.py).
         cwd = Path.cwd()
-        if (cwd / "downloadData.py").is_file() and (cwd / "json").is_dir():
+        if (cwd / "downloadData.py").is_file():
             return cwd
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
+
+
+def data_dir() -> Path:
+    return script_dir().parent / "Data" / "deltaReportPrivate"
 
 
 def t_minus_1() -> dt.date:
@@ -590,6 +594,7 @@ class ReportWorker(QObject):
     ) -> None:
         super().__init__()
         self.base_dir = base_dir
+        self.data_dir = data_dir()
         self.start_date = start_date
         self.end_date = end_date
         self.run_download = run_download
@@ -608,7 +613,7 @@ class ReportWorker(QObject):
                 f"Loading data from {self.start_date.isoformat()} to {self.end_date.isoformat()} ..."
             )
             t1 = time.perf_counter()
-            df = load_private_frames(self.base_dir / "json", self.start_date, self.end_date)
+            df = load_private_frames(self.data_dir / "json", self.start_date, self.end_date)
             df = apply_lat_ack_buckets(df)
             df = apply_roi_clv_buckets(df)
             df = apply_from_start_buckets(df)
@@ -704,7 +709,7 @@ def _query_date_to_utc_ms(d) -> int:
 
 
 def _ensure_highcharts_assets(base_dir: Path, log_fn=None) -> dict[str, str]:
-    assets_dir = base_dir / "Reports" / "web_assets"
+    assets_dir = data_dir() / "Reports" / "web_assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     out: dict[str, str] = {}
     for url, fname in HIGHCHARTS_ASSETS:
@@ -763,7 +768,7 @@ class SectionWidget(QWidget):
         web.setMinimumHeight(620)
         web.setStyleSheet(f"background-color: {DARK_BG};")
         html = self._build_highcharts_html(daily, daily_risk, group_by, heading, log_fn=log_fn)
-        charts_dir = script_dir() / "Reports" / "highcharts_charts"
+        charts_dir = data_dir() / "Reports" / "highcharts_charts"
         charts_dir.mkdir(parents=True, exist_ok=True)
         chart_path = charts_dir / f"chart_{uuid.uuid4().hex}.html"
         chart_path.write_text(html, encoding="utf-8")
@@ -802,7 +807,7 @@ class SectionWidget(QWidget):
         heading: str,
         log_fn=None,
     ) -> str:
-        assets = _ensure_highcharts_assets(script_dir(), log_fn=log_fn)
+        assets = _ensure_highcharts_assets(data_dir(), log_fn=log_fn)
         color_by_name: dict[str, str] = {}
         pnl_series: list[dict] = []
         if daily.empty:

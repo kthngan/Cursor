@@ -43,7 +43,9 @@ def read_roundtrip_metrics(path: Path) -> tuple[float, float, float]:
 
 def main() -> None:
     base = Path(__file__).resolve().parent
-    out_root = base / "backtest_output"
+    data_root = base.parent / "Data" / "IBPrice"
+    historical_dir = data_root / "historicalData"
+    out_root = data_root / "backtest_output"
     out_root.mkdir(parents=True, exist_ok=True)
 
     common = [
@@ -51,9 +53,9 @@ def main() -> None:
         "-m",
         "backtest.main",
         "--data-dir",
-        "historicalData",
+        str(historical_dir),
         "--index-file",
-        "historicalData/hsi_index_daily.csv",
+        str(historical_dir / "hsi_index_daily.csv"),
         "--start-date",
         "2026-03-01",
         "--end-date",

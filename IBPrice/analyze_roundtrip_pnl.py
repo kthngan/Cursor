@@ -10,7 +10,7 @@ Outputs:
 
 Usage:
   python analyze_roundtrip_pnl.py
-  python analyze_roundtrip_pnl.py --input backtest_output/trade_log.csv --output-dir backtest_output
+  python analyze_roundtrip_pnl.py --input ../Data/IBPrice/backtest_output/trade_log.csv --output-dir ../Data/IBPrice/backtest_output
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "IBPrice"
 
 
 @dataclass
@@ -33,8 +35,8 @@ class Lot:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Round-trip PnL analysis from trade_log.csv")
-    parser.add_argument("--input", default="backtest_output/trade_log.csv", help="Input trade log CSV")
-    parser.add_argument("--output-dir", default="backtest_output", help="Directory for analysis CSV outputs")
+    parser.add_argument("--input", default=str(DATA_DIR / "backtest_output" / "trade_log.csv"), help="Input trade log CSV")
+    parser.add_argument("--output-dir", default=str(DATA_DIR / "backtest_output"), help="Directory for analysis CSV outputs")
     parser.add_argument("--contract-multiplier", type=float, default=50.0, help="Contract multiplier")
     return parser.parse_args()
 

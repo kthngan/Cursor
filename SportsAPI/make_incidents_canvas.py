@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 
-SOURCE = Path(__file__).resolve().parent / "event_6571587_incidents_reconstructed.csv"
+SOURCE = Path(__file__).resolve().parent.parent / "Data" / "SportsAPI" / "event_6571587_incidents_reconstructed.csv"
 CANVAS = Path(
     r"C:\Users\user\.cursor\projects\c-Users-user-Documents-Cursor\canvases"
 ) / "tennis-incidents-reconstruction.canvas.tsx"

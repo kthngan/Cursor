@@ -1,10 +1,10 @@
 """
 Fetch poly-rs unified sports / leagues / markets and write tabular data to CSV
-next to this script.
+under Data/deltaReportNew.
 
 Uses header: x-api-key (default ``your_secret_key``, or env POLY_RS_API_KEY).
 
-Outputs (same directory as this file):
+Outputs:
   unified_sports.csv
   unified_leagues.csv
   unified_markets.csv
@@ -27,7 +27,7 @@ from typing import Any
 
 BASE = "https://poly-rs-data-api.it9.win/api/v1/unified"
 DEFAULT_KEY = "your_secret_key"
-OUT_DIR = Path(__file__).resolve().parent
+OUT_DIR = Path(__file__).resolve().parent.parent / "Data" / "deltaReportNew"
 # Same as accountSummary/analytics: Cloudflare 403 / "error code: 1010" with Python-urllib default UA.
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

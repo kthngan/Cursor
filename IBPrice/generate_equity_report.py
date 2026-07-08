@@ -11,7 +11,7 @@ Inputs expected in output directory:
 
 Usage:
   python generate_equity_report.py
-  python generate_equity_report.py --output-dir backtest_output --report-name equity_report.html
+  python generate_equity_report.py --output-dir ../Data/IBPrice/backtest_output --report-name equity_report.html
 """
 
 from __future__ import annotations
@@ -21,10 +21,16 @@ import csv
 import html
 from pathlib import Path
 
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "IBPrice"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate HTML equity report from backtest outputs.")
-    parser.add_argument("--output-dir", default="backtest_output", help="Directory containing backtest outputs.")
+    parser.add_argument(
+        "--output-dir",
+        default=str(DATA_DIR / "backtest_output"),
+        help="Directory containing backtest outputs.",
+    )
     parser.add_argument("--report-name", default="equity_report.html", help="Output HTML filename.")
     return parser.parse_args()
 

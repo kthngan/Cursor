@@ -1,14 +1,20 @@
+import os
+from pathlib import Path
+
 from playwright.sync_api import sync_playwright
 
 
 URL = "https://poly-pnl.it9.win/delta-report-v3"
+USERNAME = os.environ.get("POLY_PNL_USERNAME", "")
+PASSWORD = os.environ.get("POLY_PNL_PASSWORD", "")
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "deltaReportOld"
 
 
 def main() -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            http_credentials={"username": "mm", "password": "2047"},
+            http_credentials={"username": USERNAME, "password": PASSWORD},
             accept_downloads=True,
         )
         page = context.new_page()
@@ -16,7 +22,8 @@ def main() -> None:
         page.wait_for_timeout(3000)
 
         # Snapshot useful metadata for robust selector authoring.
-        page.screenshot(path="delta_report_page.png", full_page=True)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(DATA_DIR / "delta_report_page.png"), full_page=True)
         title = page.title()
         print(f"TITLE: {title}")
         print("URL:", page.url)

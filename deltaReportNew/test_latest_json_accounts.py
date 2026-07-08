@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 DATE_JSON = re.compile(r"^(\d{4}-\d{2}-\d{2})\.json$", re.IGNORECASE)
+DATA_DIR = Path(__file__).resolve().parent.parent / "Data" / "deltaReportNew"
 
 
 def latest_json_path(directory: Path) -> Path | None:
@@ -44,12 +45,11 @@ def main() -> int:
         "--json-dir",
         type=Path,
         default=None,
-        help="Folder with daily JSON files (default: ./json next to this script)",
+        help=f"Folder with daily JSON files (default: {DATA_DIR / 'json'})",
     )
     args = parser.parse_args()
 
-    script_dir = Path(__file__).resolve().parent
-    json_dir = (args.json_dir.resolve() if args.json_dir else (script_dir / "json"))
+    json_dir = (args.json_dir.resolve() if args.json_dir else (DATA_DIR / "json"))
     if not json_dir.is_dir():
         print(f"Not a directory: {json_dir}", flush=True)
         return 1

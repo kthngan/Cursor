@@ -2,7 +2,7 @@
 Run event-driven backtest for HSI tick data.
 
 Example:
-    python -m backtest.main --data-dir historicalData --index-file historicalData/hsi_index_daily.csv
+    python -m backtest.main --data-dir ../Data/IBPrice/historicalData --index-file ../Data/IBPrice/historicalData/hsi_index_daily.csv
 """
 
 from __future__ import annotations
@@ -15,13 +15,16 @@ from .components import DataHandler, ExecutionHandler, OrderManager, Performance
 from .engine import BacktestEngine
 from .models import BacktestConfig, CostModel, FillModel
 
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = PROJECT_DIR.parent / "Data" / "IBPrice"
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Event-driven tick backtest for IBPrice data.")
     parser.add_argument("--symbol", default="HSI")
-    parser.add_argument("--data-dir", default="historicalData")
-    parser.add_argument("--index-file", default="historicalData/hsi_index_daily.csv")
-    parser.add_argument("--output-dir", default="backtest_output")
+    parser.add_argument("--data-dir", default=str(DATA_DIR / "historicalData"))
+    parser.add_argument("--index-file", default=str(DATA_DIR / "historicalData" / "hsi_index_daily.csv"))
+    parser.add_argument("--output-dir", default=str(DATA_DIR / "backtest_output"))
     parser.add_argument("--start-date", default=None, help="YYYY-MM-DD")
     parser.add_argument("--end-date", default=None, help="YYYY-MM-DD")
     parser.add_argument("--vwap-threshold", type=float, default=0.003)

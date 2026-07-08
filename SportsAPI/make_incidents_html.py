@@ -7,8 +7,9 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
-SOURCE = BASE_DIR / "event_6571587_incidents_reconstructed.csv"
-OUTPUT = BASE_DIR / "event_6571587_incidents_reconstructed.html"
+DATA_DIR = BASE_DIR.parent / "Data" / "SportsAPI"
+SOURCE = DATA_DIR / "event_6571587_incidents_reconstructed.csv"
+OUTPUT = DATA_DIR / "event_6571587_incidents_reconstructed.html"
 
 
 HEADERS = [
@@ -25,6 +26,7 @@ HEADERS = [
 
 
 def main() -> int:
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     with SOURCE.open(encoding="utf-8", newline="") as file:
         rows.extend(csv.DictReader(file))
