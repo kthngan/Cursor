@@ -25,6 +25,8 @@ backtest_output/
 *.webp
 *.html
 *.pdf
+!SportsAPI/docs/
+!SportsAPI/docs/*.pdf
 *.zip
 *.7z
 *.exe
