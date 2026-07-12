@@ -1,0 +1,11 @@
+---
+description: HTML report output convention
+alwaysApply: true
+---
+
+# HTML Report Output
+
+- Save all generated HTML reports inside the workspace-level `Reports` folder by default.
+- The report directory is `C:\Users\user\Documents\Cursor\Reports`.
+- Do not default HTML reports to data-specific folders such as `Data/SportsAPI/Reports`.
+- Keep source scripts outside `Reports`; only generated report artifacts should go there.
