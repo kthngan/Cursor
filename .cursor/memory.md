@@ -29,3 +29,8 @@ $env:GIT_COMMITTER_EMAIL = "cursor-agent@local"
 ## HTML reports
 
 - Default output: `C:\Users\user\Documents\Cursor\Reports` (see `.cursor/rules/report-output-conventions.mdc`).
+
+## Quant research
+
+- Follow `.cursor/quant-statistics-best-practices.md` for research, modeling, backtesting, and validation.
+- Cursor rule: `.cursor/rules/quant-research-standards.mdc`.

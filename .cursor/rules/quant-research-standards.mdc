@@ -1,0 +1,21 @@
+---
+description: Quant research and model development standards
+alwaysApply: true
+---
+
+# Quant Research Standards
+
+For any **research, modeling, backtesting, or prediction** work in this workspace, read and follow:
+
+`.cursor/quant-statistics-best-practices.md`
+
+Apply it when designing targets, features, validation splits, backtests, metrics, and reports. In particular:
+
+- Use time-aware validation; keep a final holdout test set clean.
+- Align features to information available at decision time; assert no lookahead.
+- Start with a simple baseline before adding complexity.
+- Report both statistical fit (AUC, Brier, log loss, etc.) and economic outcomes (PnL, ROI, turnover, drawdown).
+- State execution assumptions and costs explicitly in backtests.
+- Document limitations and failure modes in outputs.
+
+Use the **Model Card** template in that file when starting a new model or major experiment.
