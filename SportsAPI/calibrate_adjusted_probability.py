@@ -7,6 +7,8 @@ Model:
     adjusted_prob_p2 = devig_prob_p2 - adjustment
 
 Calibration minimizes combined Brier loss on both P1 and P2 targets.
+Training uses match-equal row weights; primary evaluation uses one row
+per match (earliest odds snapshot) to avoid match-end label repetition bias.
 
 Compare:
   - Baseline: de-vig Pinnacle implied probability (no adjustment)
@@ -115,6 +117,7 @@ def fit_probability_adjustment(
     l2: float = 0.02,
     learning_rate: float = 0.06,
     epochs: int = 500,
+    sample_weight: np.ndarray | None = None,
 ) -> ProbabilityAdjustmentModel:
     """Fit adjustment using combined Brier loss on P1 and P2 probabilities."""
     mean_values = np.nanmean(x_train, axis=0)
@@ -124,6 +127,9 @@ def fit_probability_adjustment(
     std_values = np.where(std_values > 1e-8, std_values, 1.0)
     z_features = (filled - mean_values) / std_values
 
+    row_weight = np.ones(len(y_train), dtype=float) if sample_weight is None else sample_weight.astype(float)
+    row_weight = row_weight / max(row_weight.sum(), 1e-12) * len(row_weight)
+
     weights = np.zeros(z_features.shape[1])
     y_p2 = 1.0 - y_train
     for _ in range(epochs):
@@ -131,7 +137,7 @@ def fit_probability_adjustment(
         pred_p1 = np.clip(devig_p1 + adjustment, PROB_EPS, 1.0 - PROB_EPS)
         pred_p2 = np.clip(devig_p2 - adjustment, PROB_EPS, 1.0 - PROB_EPS)
         residual = (pred_p1 - y_train) - (pred_p2 - y_p2)
-        grad = 2.0 * (z_features.T @ residual) / len(y_train)
+        grad = 2.0 * (z_features.T @ (row_weight * residual)) / row_weight.sum()
         grad += l2 * weights
         weights -= learning_rate * grad
 
@@ -214,6 +220,30 @@ def split_train_validation(
     val = train.loc[train["event_id"].isin(val_events)].copy()
     fit = train.loc[~train["event_id"].isin(val_events)].copy()
     return fit, val
+
+
+def chronological_sort_cols(df: pd.DataFrame) -> list[str]:
+    cols = ["event_start_date", "event_id"]
+    if "ut" in df.columns:
+        cols.append("ut")
+    if "seq" in df.columns:
+        cols.append("seq")
+    return cols
+
+
+def primary_eval_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """One evaluation row per match: earliest chronological snapshot with odds."""
+    sorted_df = df.sort_values(chronological_sort_cols(df), na_position="last")
+    return sorted_df.groupby("event_id", as_index=False).head(1)
+
+
+def match_equal_row_weights(df: pd.DataFrame) -> np.ndarray:
+    """Weight rows so each match contributes equally to training loss."""
+    counts = df.groupby("event_id")["event_id"].transform("count").to_numpy(dtype=float)
+    return 1.0 / np.maximum(counts, 1.0)
+
+
+MIN_VAL_BETS_FOR_THRESHOLD = 30
 
 
 def dual_adjusted_probs_from_p1(
@@ -798,6 +828,28 @@ def run_backtest(
     }
 
 
+def select_validation_threshold(
+    val_df: pd.DataFrame,
+    adjusted_p1: np.ndarray,
+    adjusted_p2: np.ndarray,
+    thresholds: list[float],
+    *,
+    fallback: float = PRIMARY_BACKTEST_THRESHOLD,
+    min_bets: int = MIN_VAL_BETS_FOR_THRESHOLD,
+) -> tuple[float, dict[float, dict[str, Any]]]:
+    """Pick the threshold with best validation ROI subject to a minimum bet count."""
+    best_thresh = fallback
+    best_roi = -np.inf
+    val_results: dict[float, dict[str, Any]] = {}
+    for thresh in thresholds:
+        bt = run_backtest(val_df, adjusted_p1, adjusted_p2, threshold=thresh)
+        val_results[thresh] = bt
+        if bt["n_bets"] >= min_bets and bt["roi"] > best_roi:
+            best_roi = float(bt["roi"])
+            best_thresh = thresh
+    return best_thresh, val_results
+
+
 def pnl_svg_chart(backtest: dict[str, Any]) -> str:
     """Generate an inline SVG cumulative PnL chart."""
     cum_pnl = backtest["cum_pnl_series"]
@@ -987,6 +1039,7 @@ def build_report(
     xgb_features: list[str] | None = None,
     model_card: dict[str, Any] | None = None,
     calibration: dict[str, list[dict[str, float | int | str]]] | None = None,
+    overall_row_level: dict[str, dict[str, float | None]] | None = None,
 ) -> str:
     css = """
     body { font-family: Arial, sans-serif; margin: 28px; color: #1f2328; line-height: 1.45; }
@@ -1103,6 +1156,26 @@ def build_report(
         delta_rows,
     )
     overall_html = html_table(["Model", "Rows", "AUC", "Accuracy", "Brier", "RMSE", "Log loss"], overall_rows)
+
+    row_level_html = ""
+    if overall_row_level:
+        row_rows = []
+        for name in model_names:
+            m = overall_row_level[name]
+            row_rows.append([
+                model_labels[name],
+                f"{int(m.get('rows', 0)):,}",
+                fmt(m.get("auc")),
+                fmt_pct(m.get("accuracy")),
+                fmt(m.get("brier")),
+                fmt(m.get("rmse")),
+                fmt(m.get("log_loss")),
+            ])
+        row_level_html = html_table(
+            ["Model", "Rows", "AUC", "Accuracy", "Brier", "RMSE", "Log loss"],
+            row_rows,
+        )
+
     fresh_html = html_table(["Model", "Rows", "AUC", "Brier", "Log loss"], fresh_rows)
     seg_html = html_table(
         ["Segment", "Rows", "Base AUC", "Adj AUC", "Fact AUC", "Base Brier", "Adj Brier",
@@ -1410,12 +1483,17 @@ def build_report(
     <p>Positive delta in AUC (or negative in Brier/LogLoss) means the factor adjustment improves on raw odds.</p>
     {delta_html}
 
-    <h2>Probability Calibration (test set)</h2>
-    <p>Reliability bins for P1 win probability. Gaps near zero indicate good calibration.</p>
+    <h2>Probability Calibration (test set, match-level)</h2>
+    <p>Reliability bins for P1 win probability on one row per match. Gaps near zero indicate good calibration.</p>
     {calibration_html}
 
-    <h2>Detailed Results (Pinnacle odds, all staleness)</h2>
+    <h2>Detailed Results — Match-Level (primary)</h2>
+    <div class="note">One row per match: earliest in-play snapshot with Pinnacle odds. Avoids inflating fit metrics with correlated within-match rows sharing the same match-end label.</div>
     {overall_html}
+
+    <h2>Detailed Results — All In-Play Rows (secondary)</h2>
+    <div class="muted">Full test set with repeated match-end label per snapshot. Useful for diagnostics only.</div>
+    {row_level_html}
 
     <h2>Fresh Odds Subset (0-1 min staleness only)</h2>
     <div class="warn">When odds are very fresh, the bookmaker probability is most efficient.
@@ -1449,8 +1527,8 @@ def build_report(
         <li>Each bet is 1 unit (cost = trade price, payout = 1 if win)</li>
       </ul>
       <p>Signal uses current-row odds; fill uses the next Pinnacle snapshot price.
-      Pre-specified primary threshold: <b>{PRIMARY_BACKTEST_THRESHOLD:g}</b> (marked *).
-      Other thresholds are exploratory sensitivity checks (multiple-testing risk).</p>
+      Pre-specified reference threshold: <b>{PRIMARY_BACKTEST_THRESHOLD:g}</b> (marked *).
+      Primary backtest chart uses validation-selected threshold. Other thresholds are exploratory sensitivity checks.</p>
     </div>
 
     <h3>Threshold Comparison</h3>
@@ -1590,16 +1668,28 @@ def main() -> int:
     train_fit, val_fit = split_train_validation(train)
     print(f"   Train-fit (feature selection): {len(train_fit):,} rows ({train_fit['event_id'].nunique()} matches)")
     print(f"   Train-val (XGB early stop):    {len(val_fit):,} rows ({val_fit['event_id'].nunique()} matches)")
+    train_weights = match_equal_row_weights(train)
+    train_fit_weights = match_equal_row_weights(train_fit)
     print()
 
     # Step 5: Baseline prediction (de-vig odds, no adjustment)
     print("5. Computing baseline (de-vig Pinnacle odds, no adjustment)...")
-    y_test = test[TARGET_COL].to_numpy(dtype=float)
-    baseline_pred = test["devig_p1"].to_numpy(dtype=float)
-    baseline_p2_pred = test["devig_p2"].to_numpy(dtype=float)
-    baseline_metrics = evaluate_dual_predictions(y_test, baseline_pred, baseline_p2_pred)
-    print(f"   Baseline: AUC={fmt(baseline_metrics['auc'])} Brier={fmt(baseline_metrics['brier'])} "
-          f"(P1={fmt(baseline_metrics['brier_p1'])}, P2={fmt(baseline_metrics['brier_p2'])})")
+    test_scored = test.copy()
+    test_scored["pred_baseline_p1"] = pd.to_numeric(test["devig_p1"], errors="coerce")
+    test_scored["pred_baseline_p2"] = pd.to_numeric(test["devig_p2"], errors="coerce")
+    test_primary = primary_eval_rows(test_scored)
+    y_test_primary = test_primary[TARGET_COL].to_numpy(dtype=float)
+    baseline_pred = test_scored["pred_baseline_p1"].to_numpy(dtype=float)
+    baseline_p2_pred = test_scored["pred_baseline_p2"].to_numpy(dtype=float)
+    baseline_pred_primary = test_primary["pred_baseline_p1"].to_numpy(dtype=float)
+    baseline_p2_primary = test_primary["pred_baseline_p2"].to_numpy(dtype=float)
+    baseline_metrics = evaluate_dual_predictions(y_test_primary, baseline_pred_primary, baseline_p2_primary)
+    baseline_metrics_row = evaluate_dual_predictions(
+        test[TARGET_COL].to_numpy(dtype=float), baseline_pred, baseline_p2_pred,
+    )
+    print(f"   Baseline (match-level): AUC={fmt(baseline_metrics['auc'])} Brier={fmt(baseline_metrics['brier'])} "
+          f"({int(baseline_metrics['rows'])} matches)")
+    print(f"   Baseline (all rows):    AUC={fmt(baseline_metrics_row['auc'])} Brier={fmt(baseline_metrics_row['brier'])}")
     print()
 
     # Step 6: First pass — feature selection on train-fit fold only (nested validation)
@@ -1612,6 +1702,7 @@ def main() -> int:
     model_pass1 = fit_probability_adjustment(
         x_train_fit, y_train_fit, devig_p1_train_fit, devig_p2_train_fit,
         l2=0.02, learning_rate=0.06, epochs=500,
+        sample_weight=train_fit_weights,
     )
     stats_pass1 = probability_adjustment_stats(
         model_pass1, train_fit, "devig_p1", "devig_p2", TARGET_COL, factor_features,
@@ -1637,6 +1728,7 @@ def main() -> int:
     model = fit_probability_adjustment(
         x_train_sel, y_train, devig_p1_train, devig_p2_train,
         l2=0.02, learning_rate=0.06, epochs=500,
+        sample_weight=train_weights,
     )
 
     val_adj_p1, val_adj_p2, _ = predict_adjusted_probs(
@@ -1645,10 +1737,16 @@ def main() -> int:
         val_fit["devig_p1"].to_numpy(dtype=float),
         val_fit["devig_p2"].to_numpy(dtype=float),
     )
+    val_primary = primary_eval_rows(val_fit.assign(
+        pred_adj_p1=val_adj_p1,
+        pred_adj_p2=val_adj_p2,
+    ))
     val_metrics = evaluate_dual_predictions(
-        val_fit[TARGET_COL].to_numpy(dtype=float), val_adj_p1, val_adj_p2,
+        val_primary[TARGET_COL].to_numpy(dtype=float),
+        val_primary["pred_adj_p1"].to_numpy(dtype=float),
+        val_primary["pred_adj_p2"].to_numpy(dtype=float),
     )
-    print(f"   Train-val check: AUC={fmt(val_metrics['auc'])} Brier={fmt(val_metrics['brier'])}")
+    print(f"   Train-val check (match-level): AUC={fmt(val_metrics['auc'])} Brier={fmt(val_metrics['brier'])}")
 
     devig_p1_test = test["devig_p1"].to_numpy(dtype=float)
     devig_p2_test = test["devig_p2"].to_numpy(dtype=float)
@@ -1658,9 +1756,20 @@ def main() -> int:
         devig_p1_test,
         devig_p2_test,
     )
-    adjusted_metrics = evaluate_dual_predictions(y_test, adjusted_pred, adjusted_p2_pred)
-    print(f"   Logistic: AUC={fmt(adjusted_metrics['auc'])} Brier={fmt(adjusted_metrics['brier'])} "
-          f"(P1={fmt(adjusted_metrics['brier_p1'])}, P2={fmt(adjusted_metrics['brier_p2'])})")
+    test_scored["pred_adjusted_p1"] = adjusted_pred
+    test_scored["pred_adjusted_p2"] = adjusted_p2_pred
+    test_primary = primary_eval_rows(test_scored)
+    adjusted_metrics = evaluate_dual_predictions(
+        test_primary[TARGET_COL].to_numpy(dtype=float),
+        test_primary["pred_adjusted_p1"].to_numpy(dtype=float),
+        test_primary["pred_adjusted_p2"].to_numpy(dtype=float),
+    )
+    adjusted_metrics_row = evaluate_dual_predictions(
+        test[TARGET_COL].to_numpy(dtype=float), adjusted_pred, adjusted_p2_pred,
+    )
+    print(f"   Logistic (match-level): AUC={fmt(adjusted_metrics['auc'])} Brier={fmt(adjusted_metrics['brier'])} "
+          f"({int(adjusted_metrics['rows'])} matches)")
+    print(f"   Logistic (all rows):    AUC={fmt(adjusted_metrics_row['auc'])} Brier={fmt(adjusted_metrics_row['brier'])}")
     print()
 
     # Step 7b: XGBoost adjustment model (same selected features + de-vig odds)
@@ -1674,9 +1783,20 @@ def main() -> int:
     xgb_adj_p1, xgb_adj_p2, _ = dual_adjusted_probs_from_p1(
         xgb_p1_pred, devig_p1_test, devig_p2_test,
     )
-    xgb_metrics = evaluate_dual_predictions(y_test, xgb_adj_p1, xgb_adj_p2)
-    print(f"   XGBoost: AUC={fmt(xgb_metrics['auc'])} Brier={fmt(xgb_metrics['brier'])} "
-          f"(P1={fmt(xgb_metrics['brier_p1'])}, P2={fmt(xgb_metrics['brier_p2'])})")
+    xgb_scored = test.copy()
+    xgb_scored["pred_adj_p1"] = xgb_adj_p1
+    xgb_scored["pred_adj_p2"] = xgb_adj_p2
+    xgb_primary = primary_eval_rows(xgb_scored)
+    xgb_metrics = evaluate_dual_predictions(
+        xgb_primary[TARGET_COL].to_numpy(dtype=float),
+        xgb_primary["pred_adj_p1"].to_numpy(dtype=float),
+        xgb_primary["pred_adj_p2"].to_numpy(dtype=float),
+    )
+    xgb_metrics_row = evaluate_dual_predictions(
+        test[TARGET_COL].to_numpy(dtype=float), xgb_adj_p1, xgb_adj_p2,
+    )
+    print(f"   XGBoost (match-level): AUC={fmt(xgb_metrics['auc'])} Brier={fmt(xgb_metrics['brier'])}")
+    print(f"   XGBoost (all rows):    AUC={fmt(xgb_metrics_row['auc'])} Brier={fmt(xgb_metrics_row['brier'])}")
     print("   Computing XGBoost SHAP summary...")
     xgb_shap = shap_summary(xgb_booster, train, test, xgb_features)
     print()
@@ -1689,8 +1809,17 @@ def main() -> int:
         l2=0.02, learning_rate=0.06, epochs=500,
     )
     factors_pred = predict_logistic(factors_model, fill_matrix(train, test, selected_features))
-    factors_metrics = evaluate_predictions(test[TARGET_COL].to_numpy(dtype=float), factors_pred)
-    print(f"   Factors only: AUC={fmt(factors_metrics['auc'])} Brier={fmt(factors_metrics['brier'])} LogLoss={fmt(factors_metrics['log_loss'])}")
+    test_scored["pred_factors_p1"] = factors_pred
+    factors_primary = primary_eval_rows(test_scored)
+    factors_metrics = evaluate_predictions(
+        factors_primary[TARGET_COL].to_numpy(dtype=float),
+        factors_primary["pred_factors_p1"].to_numpy(dtype=float),
+    )
+    factors_metrics_row = evaluate_predictions(
+        test[TARGET_COL].to_numpy(dtype=float), factors_pred,
+    )
+    print(f"   Factors only (match-level): AUC={fmt(factors_metrics['auc'])} Brier={fmt(factors_metrics['brier'])}")
+    print(f"   Factors only (all rows):    AUC={fmt(factors_metrics_row['auc'])} Brier={fmt(factors_metrics_row['brier'])}")
     print()
 
     # Step 9: Compute regression stats for selected factors
@@ -1776,8 +1905,19 @@ def main() -> int:
         })
     print()
 
-    # Step 12: Run backtests at multiple thresholds
-    print("12. Running backtests across thresholds...")
+    # Step 12: Select threshold on validation, then backtest on test
+    print("12. Selecting threshold on validation fold...")
+    selected_threshold, val_backtests = select_validation_threshold(
+        val_fit, val_adj_p1, val_adj_p2, BACKTEST_THRESHOLDS,
+        fallback=PRIMARY_BACKTEST_THRESHOLD,
+    )
+    val_primary_bt = val_backtests.get(selected_threshold, {})
+    print(f"   Validation-selected threshold: {selected_threshold:g} "
+          f"(ROI={val_primary_bt.get('roi', 0):+.2%}, bets={val_primary_bt.get('n_bets', 0)})")
+    print(f"   Pre-specified threshold:       {PRIMARY_BACKTEST_THRESHOLD:g}")
+    print()
+
+    print("12b. Running backtests across thresholds on test...")
     thresholds = BACKTEST_THRESHOLDS
     backtests = {}
     xgb_backtests = {}
@@ -1788,7 +1928,8 @@ def main() -> int:
         xgb_backtests[thresh] = xgb_bt
         print(f"   thresh={thresh:g}: logistic PnL={bt['total_pnl']:+.2f} ROI={bt['roi']:+.2%} | "
               f"xgb PnL={xgb_bt['total_pnl']:+.2f} ROI={xgb_bt['roi']:+.2%}")
-    backtest = backtests[PRIMARY_BACKTEST_THRESHOLD]
+    backtest = backtests[selected_threshold]
+    prespecified_backtest = backtests.get(PRIMARY_BACKTEST_THRESHOLD, backtest)
     adjustment_comparison = {
         "baseline": baseline_metrics,
         "logistic": adjusted_metrics,
@@ -1799,8 +1940,14 @@ def main() -> int:
         },
     }
     calibration = {
-        "baseline": calibration_bins(y_test, baseline_pred),
-        "adjusted": calibration_bins(y_test, adjusted_pred),
+        "baseline": calibration_bins(
+            test_primary[TARGET_COL].to_numpy(dtype=float),
+            test_primary["pred_baseline_p1"].to_numpy(dtype=float),
+        ),
+        "adjusted": calibration_bins(
+            test_primary[TARGET_COL].to_numpy(dtype=float),
+            test_primary["pred_adjusted_p1"].to_numpy(dtype=float),
+        ),
     }
 
     # Step 13: Collect split info
@@ -1816,27 +1963,29 @@ def main() -> int:
         "test_start": str(test["event_start_date"].min().date()) if test["event_start_date"].notna().any() else "N/A",
         "test_end": str(test["event_start_date"].max().date()) if test["event_start_date"].notna().any() else "N/A",
     }
-    primary_bt = backtests[PRIMARY_BACKTEST_THRESHOLD]
+    primary_bt = backtests[selected_threshold]
     model_card = {
         "Objective": "Improve in-play match-winner probability vs Pinnacle de-vig odds",
-        "Horizon": "Each in-play snapshot row; trade signal vs next odds update fill",
-        "Target": "target_p1_win (final match winner, constant within match)",
+        "Horizon": "P(P1 wins match | state and odds at snapshot t); evaluated at earliest odds row per match",
+        "Target": "target_p1_win — final match outcome used as conditional label (one eval row/match)",
         "Universe": "Pinnacle H2H tennis with enriched rolling metrics",
         "Features": ", ".join(selected_features),
         "Feature selection": "Top 2 per group by |z-stat| on train-fit fold only (nested)",
+        "Training weights": "Match-equal row weights (1 / rows per match) to avoid match repetition bias",
         "Train window": f"{split_info['train_start']} to {split_info['train_end']} ({split_info['train_events']} matches)",
-        "Validation method": "15% latest train events for feature selection + XGB early stopping; 40% holdout test",
+        "Validation method": "15% latest train events for feature selection, threshold selection, and XGB early stopping",
         "Test window": f"{split_info['test_start']} to {split_info['test_end']} ({split_info['test_events']} matches)",
         "Costs assumed": "1-unit bets; fill at next raw implied price; vig in raw price; no extra commission model",
-        "Primary threshold": f"{PRIMARY_BACKTEST_THRESHOLD:g}",
-        "Key metrics (test)": (
+        "Validation threshold": f"{selected_threshold:g}",
+        "Pre-specified threshold": f"{PRIMARY_BACKTEST_THRESHOLD:g}",
+        "Key metrics (test, match-level)": (
             f"Logistic AUC {fmt(adjusted_metrics['auc'])}, Brier {fmt(adjusted_metrics['brier'])}; "
-            f"ROI {fmt_pct(primary_bt['roi'])}, max DD {fmt(primary_bt.get('max_drawdown'), 2)}"
+            f"ROI @ val thresh {fmt_pct(primary_bt['roi'])}, max DD {fmt(primary_bt.get('max_drawdown'), 2)}"
         ),
         "Known failure modes": (
-            "Match-end label on all in-play rows; threshold sweep is exploratory; "
-            "no walk-forward refit; segments and calibration checked on same test split; "
-            "capacity and market impact not modeled."
+            "Match-end label still conditions on final outcome; match-level eval reduces but does not remove "
+            "late-match leakage in backtest rows; threshold sweep on test remains exploratory; "
+            "no walk-forward refit; capacity and market impact not modeled."
         ),
     }
     print(f"   Train: {split_info['train_events']} matches, {split_info['train_start']} to {split_info['train_end']}")
@@ -1850,23 +1999,30 @@ def main() -> int:
         "adjusted": adjusted_metrics,
         "factors_only": factors_metrics,
     }
+    overall_row_level = {
+        "baseline": baseline_metrics_row,
+        "adjusted": adjusted_metrics_row,
+        "factors_only": factors_metrics_row,
+    }
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(
         build_report(df, selected_features, factor_groups, overall, stats, segments,
                      fresh_subset, diff_stats, diff_bins, backtest, split_info, backtests,
-                     adjustment_comparison, xgb_shap, xgb_features, model_card, calibration),
+                     adjustment_comparison, xgb_shap, xgb_features, model_card, calibration,
+                     overall_row_level),
         encoding="utf-8",
     )
     print(f"   Report: {OUTPUT_PATH}")
     print()
 
-    # Summary
-    print("=== Summary ===")
+    print("=== Summary (match-level fit, primary) ===")
     print(f"  Baseline (Pinnacle de-vig):  AUC={fmt(baseline_metrics['auc'])} Brier={fmt(baseline_metrics['brier'])}")
     print(f"  Logistic adjusted:          AUC={fmt(adjusted_metrics['auc'])} Brier={fmt(adjusted_metrics['brier'])}")
     print(f"  XGBoost adjusted:           AUC={fmt(xgb_metrics['auc'])} Brier={fmt(xgb_metrics['brier'])}")
     print(f"  Factors only (no odds):     AUC={fmt(factors_metrics['auc'])} Brier={fmt(factors_metrics['brier'])}")
     print(f"  Selected factors:           {len(selected_features)}")
+    print(f"  Validation threshold:       {selected_threshold:g}")
+    print(f"  Test ROI @ val threshold:   {primary_bt['roi']:+.2%} (pre-spec {PRIMARY_BACKTEST_THRESHOLD:g}: {prespecified_backtest['roi']:+.2%})")
     delta_auc = (adjusted_metrics['auc'] or 0) - (baseline_metrics['auc'] or 0)
     delta_brier = (adjusted_metrics['brier'] or 0) - (baseline_metrics['brier'] or 0)
     xgb_delta_auc = (xgb_metrics['auc'] or 0) - (baseline_metrics['auc'] or 0)
