@@ -1,0 +1,46 @@
+---
+description: Git commit and GitHub push workflow for this workspace
+alwaysApply: true
+---
+
+# Git / GitHub Workflow
+
+Use this workflow when the user asks to commit, push, or sync to GitHub.
+
+## Git executable
+
+- **Never install or reinstall Git** for this project.
+- Use portable MinGit at `.tools/mingit/cmd/git.exe` (repo root: `C:\Users\user\Documents\Cursor`).
+- PowerShell example:
+
+```powershell
+$git = Join-Path (Get-Location) ".tools\mingit\cmd\git.exe"
+& $git status
+```
+
+If `git` is not recognized in the shell, that is normal — always use the path above.
+
+## Remote
+
+- **origin:** `https://github.com/kthngan/Cursor.git`
+- **branch:** `main`
+
+## Commit workflow
+
+1. Run in parallel: `git status`, `git diff`, `git log -5 --oneline` (via portable git).
+2. Stage only relevant source files — never secrets (`.env`, credentials) or ignored data (`Data/`, `Reports/`, `.tools/`).
+3. Commit with a concise message focused on why.
+4. Do **not** run `git config`. For identity, set `GIT_AUTHOR_*` / `GIT_COMMITTER_*` env vars if needed.
+5. Push: `git push -u origin main` (or `git push` if upstream exists).
+6. If push blocks with no output, the user may need to complete GitHub authentication in the browser (Credential Manager).
+
+## Push workflow
+
+```powershell
+$git = ".tools\mingit\cmd\git.exe"
+& $git add <files>
+& $git commit -m "message"
+& $git push origin main
+```
+
+Only commit when the user explicitly asks.

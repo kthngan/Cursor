@@ -2,16 +2,16 @@
 """Calibrate an additive adjustment on top of de-vig odds probability.
 
 Model:
-    adjusted_prob = sigmoid(logit(odds_no_vig_p1) + clip(adjustment, -0.06, 0.06))
+    adjustment = standardized_factors · beta   # probability space, uncapped
+    adjusted_prob_p1 = devig_prob_p1 + adjustment
+    adjusted_prob_p2 = devig_prob_p2 - adjustment
 
-The adjustment is calibrated from factor features using logistic regression
-with the odds logit as a fixed offset (coefficient = 1, not learned). The raw
-adjustment is hard-capped at ±0.06 in logit space during beta calibration.
+Calibration minimizes combined Brier loss on both P1 and P2 targets.
 
 Compare:
-  - Baseline: sigmoid(odds_logit)  = raw de-vig probability (no adjustment)
-  - Adjusted: sigmoid(odds_logit + factor_adjustment)
-  - Factors-only: sigmoid(factor_adjustment) (no odds prior, for reference)
+  - Baseline: de-vig Pinnacle implied probability (no adjustment)
+  - Adjusted P1/P2: devig ± factor adjustment
+  - Factors-only: logistic on factors alone (reference)
 """
 
 from __future__ import annotations
@@ -50,16 +50,192 @@ from train_calibrated_probability_model import (  # noqa: E402
 from train_xgboost_factor_models import (  # noqa: E402
     add_factor_features,
     fill_matrix,
+    shap_bar_chart,
+    shap_rows,
+    shap_summary,
+    train_xgboost,
 )
 
 OUTPUT_PATH = REPORTS_DIR / "adjusted_probability_report.html"
 TARGET_COL = "target_p1_win"
 WITH_ODDS_DIR = DATA_DIR / "with_pinnacle_odds"
-ADJUSTMENT_CAP = 0.06  # max |adjustment| in logit space during calibration and prediction
+LOGIT_ADJUSTMENT_CAP = 0.06  # legacy logit-offset helpers only
+MIN_TRADE_GAP_SECONDS = 60  # minimum seconds between trades in the same match
+BACKTEST_THRESHOLDS = [0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.25]
+SEGMENT_BACKTEST_THRESHOLD = 0.15  # 0.1-0.15 threshold bucket
 
 
 # ---------------------------------------------------------------------------
-# Logistic regression with offset
+# Probability-space adjustment model (dual-side calibration)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ProbabilityAdjustmentModel:
+    mean: np.ndarray
+    std: np.ndarray
+    weights: np.ndarray
+
+
+def _standardize_features(x_values: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
+    filled = np.where(np.isnan(x_values), mean, x_values)
+    return (filled - mean) / std
+
+
+def compute_adjustment(
+    model: ProbabilityAdjustmentModel,
+    x_values: np.ndarray,
+) -> np.ndarray:
+    z = _standardize_features(x_values, model.mean, model.std)
+    return z @ model.weights
+
+
+def predict_adjusted_probs(
+    model: ProbabilityAdjustmentModel,
+    x_values: np.ndarray,
+    devig_p1: np.ndarray,
+    devig_p2: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    adjustment = compute_adjustment(model, x_values)
+    adjusted_p1 = np.clip(devig_p1 + adjustment, PROB_EPS, 1.0 - PROB_EPS)
+    adjusted_p2 = np.clip(devig_p2 - adjustment, PROB_EPS, 1.0 - PROB_EPS)
+    return adjusted_p1, adjusted_p2, adjustment
+
+
+def fit_probability_adjustment(
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    devig_p1: np.ndarray,
+    devig_p2: np.ndarray,
+    *,
+    l2: float = 0.02,
+    learning_rate: float = 0.06,
+    epochs: int = 500,
+) -> ProbabilityAdjustmentModel:
+    """Fit adjustment using combined Brier loss on P1 and P2 probabilities."""
+    mean_values = np.nanmean(x_train, axis=0)
+    mean_values = np.where(np.isfinite(mean_values), mean_values, 0.0)
+    filled = np.where(np.isnan(x_train), mean_values, x_train)
+    std_values = filled.std(axis=0)
+    std_values = np.where(std_values > 1e-8, std_values, 1.0)
+    z_features = (filled - mean_values) / std_values
+
+    weights = np.zeros(z_features.shape[1])
+    y_p2 = 1.0 - y_train
+    for _ in range(epochs):
+        adjustment = z_features @ weights
+        pred_p1 = np.clip(devig_p1 + adjustment, PROB_EPS, 1.0 - PROB_EPS)
+        pred_p2 = np.clip(devig_p2 - adjustment, PROB_EPS, 1.0 - PROB_EPS)
+        residual = (pred_p1 - y_train) - (pred_p2 - y_p2)
+        grad = 2.0 * (z_features.T @ residual) / len(y_train)
+        grad += l2 * weights
+        weights -= learning_rate * grad
+
+    return ProbabilityAdjustmentModel(mean_values, std_values, weights)
+
+
+def probability_adjustment_stats(
+    model: ProbabilityAdjustmentModel,
+    train: pd.DataFrame,
+    devig_p1_col: str,
+    devig_p2_col: str,
+    target_col: str,
+    features: list[str],
+) -> list[dict[str, Any]]:
+    """Compute t-stats for the dual-side probability adjustment model."""
+    x_raw = fill_matrix(train, train, features)
+    z = _standardize_features(x_raw, model.mean, model.std)
+    devig_p1 = train[devig_p1_col].to_numpy(dtype=float)
+    devig_p2 = train[devig_p2_col].to_numpy(dtype=float)
+    adjustment = compute_adjustment(model, x_raw)
+    pred_p1 = np.clip(devig_p1 + adjustment, PROB_EPS, 1.0 - PROB_EPS)
+    hessian = 2.0 * (z.T @ z)
+    try:
+        cov = np.linalg.pinv(hessian + 1e-6 * np.eye(z.shape[1]))
+        std_errors = np.sqrt(np.maximum(np.diag(cov), 0.0))
+    except np.linalg.LinAlgError:
+        std_errors = np.full(z.shape[1], np.nan)
+
+    rows = []
+    for idx, feature in enumerate(features):
+        coef = float(model.weights[idx])
+        se = float(std_errors[idx]) if math.isfinite(float(std_errors[idx])) else None
+        z_stat = coef / se if se and se > 0 else None
+        p_value = float(2.0 * norm.sf(abs(z_stat))) if z_stat is not None else None
+        rows.append({
+            "feature": feature,
+            "coefficient": coef,
+            "std_error": se,
+            "z_stat": z_stat,
+            "p_value": p_value,
+        })
+    _ = pred_p1  # computed for potential future diagnostics
+    return rows
+
+
+def evaluate_dual_predictions(
+    y_p1: np.ndarray,
+    adjusted_p1: np.ndarray,
+    adjusted_p2: np.ndarray,
+) -> dict[str, float | None]:
+    y_p2 = 1.0 - y_p1
+    p1_metrics = evaluate_predictions(y_p1, adjusted_p1)
+    p2_metrics = evaluate_predictions(y_p2, adjusted_p2)
+    combined_brier = float(np.mean((adjusted_p1 - y_p1) ** 2 + (adjusted_p2 - y_p2) ** 2))
+    return {
+        "rows": float(len(y_p1)),
+        "auc": p1_metrics["auc"],
+        "accuracy": p1_metrics["accuracy"],
+        "brier": combined_brier,
+        "brier_p1": p1_metrics["brier"],
+        "brier_p2": p2_metrics["brier"],
+        "rmse": p1_metrics["rmse"],
+        "log_loss": p1_metrics["log_loss"],
+        "auc_p2": p2_metrics["auc"],
+    }
+
+
+def split_train_validation(
+    train: pd.DataFrame,
+    val_frac: float = 0.15,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Hold out the latest training events for XGBoost early stopping."""
+    events = (
+        train[["event_id", "event_start_date"]]
+        .drop_duplicates("event_id")
+        .sort_values(["event_start_date", "event_id"], na_position="last")
+    )
+    split_at = max(1, int(len(events) * (1.0 - val_frac)))
+    val_events = set(events.iloc[split_at:]["event_id"])
+    val = train.loc[train["event_id"].isin(val_events)].copy()
+    fit = train.loc[~train["event_id"].isin(val_events)].copy()
+    return fit, val
+
+
+def dual_adjusted_probs_from_p1(
+    p1_pred: np.ndarray,
+    devig_p1: np.ndarray,
+    devig_p2: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert a P1 win probability into dual-side adjusted probabilities."""
+    adjusted_p1 = np.clip(p1_pred, PROB_EPS, 1.0 - PROB_EPS)
+    adjustment = adjusted_p1 - devig_p1
+    adjusted_p2 = np.clip(devig_p2 - adjustment, PROB_EPS, 1.0 - PROB_EPS)
+    return adjusted_p1, adjusted_p2, adjustment
+
+
+def train_xgboost_adjustment(
+    train: pd.DataFrame,
+    validation: pd.DataFrame,
+    test: pd.DataFrame,
+    features: list[str],
+) -> tuple[Any, np.ndarray]:
+    """Train XGBoost on selected factors plus de-vig odds features."""
+    booster, p1_pred = train_xgboost(train, validation, test, TARGET_COL, features)
+    return booster, p1_pred
+
+
+# ---------------------------------------------------------------------------
+# Legacy logit-offset helpers (factors-only reference)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -77,7 +253,7 @@ def fit_logistic_with_offset(
     l2: float = 0.02,
     learning_rate: float = 0.06,
     epochs: int = 500,
-    cap: float = ADJUSTMENT_CAP,
+    cap: float = LOGIT_ADJUSTMENT_CAP,
 ) -> OffsetLogisticModel:
     """Fit logistic regression where z = offset + clip(X @ beta, -cap, cap).
 
@@ -111,7 +287,7 @@ def predict_with_offset(
     model: OffsetLogisticModel,
     x_values: np.ndarray,
     offset: np.ndarray,
-    cap: float = ADJUSTMENT_CAP,
+    cap: float = LOGIT_ADJUSTMENT_CAP,
 ) -> np.ndarray:
     filled = np.where(np.isnan(x_values), model.mean, x_values)
     z = (filled - model.mean) / model.std
@@ -130,7 +306,7 @@ def offset_logistic_stats(
     x_raw = fill_matrix(train, train, features)
     z = (x_raw - model.mean) / model.std
     offset = train[offset_col].to_numpy(dtype=float)
-    adjustment = np.clip(z @ model.weights, -ADJUSTMENT_CAP, ADJUSTMENT_CAP)
+    adjustment = np.clip(z @ model.weights, -LOGIT_ADJUSTMENT_CAP, LOGIT_ADJUSTMENT_CAP)
     pred = sigmoid(offset + adjustment)
     weight = np.clip(pred * (1.0 - pred), 1e-8, None)
     hessian = (z.T * weight) @ z
@@ -249,68 +425,100 @@ def split_frames(df: pd.DataFrame, target_col: str) -> tuple[pd.DataFrame, pd.Da
 # Staleness bins for segment analysis
 # ---------------------------------------------------------------------------
 
-STALENESS_BINS = [0, 60, 300, 600, 1800, 3600, float("inf")]
-STALENESS_LABELS = ["0-1m", "1-5m", "5-10m", "10-30m", "30-60m", "60m+"]
+STALENESS_BINS = [0, 60, 150, 300, 450, 600]  # seconds: 0-1, 1-2.5, 2.5-5, 5-7.5, 7.5-10 min
+STALENESS_LABELS = ["0-1m", "1-2.5m", "2.5-5m", "5-7.5m", "7.5-10m"]
+PROB_EPS = 1e-6
+
+
+def _append_trade_stats(row: dict[str, Any], bets: pd.DataFrame) -> dict[str, Any]:
+    if bets.empty:
+        row["pnl"] = 0.0
+        row["turnover"] = 0.0
+        row["rot"] = None
+        row["n_bets"] = 0
+    else:
+        turnover = float(bets["bet_cost"].sum())
+        pnl = float(bets["pnl"].sum())
+        row["turnover"] = turnover
+        row["pnl"] = pnl
+        row["rot"] = pnl / turnover if turnover > 0 else None
+        row["n_bets"] = int(len(bets))
+    return row
 
 
 def segment_analysis(
-    test: pd.DataFrame,
-    baseline_pred: np.ndarray,
-    adjusted_pred: np.ndarray,
-    factors_only_pred: np.ndarray,
+    df: pd.DataFrame,
+    factors_only_pred: np.ndarray | None = None,
+    *,
+    min_rows: int = 100,
 ) -> list[dict[str, Any]]:
-    df = test.copy()
-    df["pred_baseline"] = baseline_pred
-    df["pred_adjusted"] = adjusted_pred
-    df["pred_factors_only"] = factors_only_pred
+    work = df.copy()
+    work["pred_baseline"] = pd.to_numeric(work["devig_p1"], errors="coerce")
+    work["pred_adjusted"] = pd.to_numeric(work["adjusted_prob_p1"], errors="coerce")
+    if factors_only_pred is not None:
+        work["pred_factors_only"] = factors_only_pred
 
     results = []
+    bets_all = work.loc[work["side"] != ""] if "side" in work.columns else work.iloc[0:0]
 
-    # By staleness
-    df["staleness_bin"] = pd.cut(
-        df["odds_age_seconds"].fillna(-1),
-        bins=[-2] + STALENESS_BINS,
-        labels=["no_odds"] + STALENESS_LABELS,
+    # By staleness (minutes: 0-1, 1-2.5, 2.5-5, 5-7.5, 7.5-10)
+    stale = work.loc[work["odds_age_seconds"].notna() & (work["odds_age_seconds"] >= 0)].copy()
+    stale["staleness_bin"] = pd.cut(
+        stale["odds_age_seconds"],
+        bins=STALENESS_BINS,
+        labels=STALENESS_LABELS,
         right=False,
     )
-    for label, group in df.groupby("staleness_bin", observed=True):
+    for label, group in stale.groupby("staleness_bin", observed=True):
         y = group[TARGET_COL].to_numpy(dtype=float)
-        if len(y) < 100:
+        if len(y) < min_rows:
             continue
         row = {"segment": f"Staleness: {label}", "rows": len(group)}
         for name, col in [("baseline", "pred_baseline"), ("adjusted", "pred_adjusted"), ("factors_only", "pred_factors_only")]:
+            if col not in group.columns:
+                continue
             m = evaluate_predictions(y, group[col].to_numpy(dtype=float))
             row[f"{name}_auc"] = m["auc"]
             row[f"{name}_brier"] = m["brier"]
             row[f"{name}_log_loss"] = m["log_loss"]
+        seg_bets = bets_all.loc[bets_all.index.isin(group.index)]
+        _append_trade_stats(row, seg_bets)
         results.append(row)
 
     # By match progression
-    for label, mask in [("Early (sets_total<=1)", df["sets_total"] <= 1),
-                        ("Mid (sets_total==2)", df["sets_total"] == 2),
-                        ("Late (sets_total>=3)", df["sets_total"] >= 3)]:
-        group = df[mask]
-        if len(group) < 100:
+    for label, mask in [("Early (sets_total<=1)", work["sets_total"] <= 1),
+                        ("Mid (sets_total==2)", work["sets_total"] == 2),
+                        ("Late (sets_total>=3)", work["sets_total"] >= 3)]:
+        group = work.loc[mask]
+        if len(group) < min_rows:
             continue
         y = group[TARGET_COL].to_numpy(dtype=float)
         row = {"segment": f"Progression: {label}", "rows": len(group)}
         for name, col in [("baseline", "pred_baseline"), ("adjusted", "pred_adjusted"), ("factors_only", "pred_factors_only")]:
+            if col not in group.columns:
+                continue
             m = evaluate_predictions(y, group[col].to_numpy(dtype=float))
             row[f"{name}_auc"] = m["auc"]
             row[f"{name}_brier"] = m["brier"]
             row[f"{name}_log_loss"] = m["log_loss"]
+        seg_bets = bets_all.loc[bets_all.index.isin(group.index)]
+        _append_trade_stats(row, seg_bets)
         results.append(row)
 
     # By league
-    for league, group in df.groupby("league", dropna=False):
+    for league, group in work.groupby("league", dropna=False):
         if len(group) < 500:
             continue
         y = group[TARGET_COL].to_numpy(dtype=float)
         row = {"segment": f"League: {league}", "rows": len(group)}
         for name, col in [("baseline", "pred_baseline"), ("adjusted", "pred_adjusted"), ("factors_only", "pred_factors_only")]:
+            if col not in group.columns:
+                continue
             m = evaluate_predictions(y, group[col].to_numpy(dtype=float))
             row[f"{name}_auc"] = m["auc"]
             row[f"{name}_brier"] = m["brier"]
+        seg_bets = bets_all.loc[bets_all.index.isin(group.index)]
+        _append_trade_stats(row, seg_bets)
         results.append(row)
 
     return results
@@ -320,55 +528,187 @@ def segment_analysis(
 # Backtest
 # ---------------------------------------------------------------------------
 
+def _add_next_odds_execution_prices(df: pd.DataFrame) -> pd.DataFrame:
+    """Map each row to execution prices from the next odds update in the same match."""
+    out = df.copy()
+    n = len(out)
+    next_raw_p1 = np.full(n, np.nan)
+    next_raw_p2 = np.full(n, np.nan)
+    next_pinnacle_p1 = np.full(n, np.nan)
+    next_pinnacle_p2 = np.full(n, np.nan)
+    has_next = np.zeros(n, dtype=bool)
+
+    p1 = pd.to_numeric(out.get("odds_p1_price"), errors="coerce").to_numpy(dtype=float)
+    p2 = pd.to_numeric(out.get("odds_p2_price"), errors="coerce").to_numpy(dtype=float)
+    snap = out.get("odds_snapshot_time", pd.Series([""] * n)).astype(str).to_numpy()
+
+    for _, idx in out.groupby("event_id", sort=False).indices.items():
+        idx = np.asarray(idx, dtype=int)
+        if len(idx) == 0:
+            continue
+
+        local_snap = snap[idx]
+        local_p1 = p1[idx]
+        local_p2 = p2[idx]
+        change_points = [0]
+        for pos in range(1, len(idx)):
+            if (
+                local_snap[pos] != local_snap[pos - 1]
+                or local_p1[pos] != local_p1[pos - 1]
+                or local_p2[pos] != local_p2[pos - 1]
+            ):
+                change_points.append(pos)
+        change_points.append(len(idx))
+
+        for seg in range(len(change_points) - 1):
+            seg_start = change_points[seg]
+            seg_end = change_points[seg + 1]
+            if seg + 1 >= len(change_points) - 1:
+                continue
+            exec_pos = change_points[seg + 1]
+            exec_global = idx[exec_pos]
+            exec_raw_p1 = 1.0 / local_p1[exec_pos] if local_p1[exec_pos] > 0 else np.nan
+            exec_raw_p2 = 1.0 / local_p2[exec_pos] if local_p2[exec_pos] > 0 else np.nan
+            for pos in range(seg_start, seg_end):
+                global_i = idx[pos]
+                next_raw_p1[global_i] = exec_raw_p1
+                next_raw_p2[global_i] = exec_raw_p2
+                next_pinnacle_p1[global_i] = local_p1[exec_pos]
+                next_pinnacle_p2[global_i] = local_p2[exec_pos]
+                has_next[global_i] = np.isfinite(exec_raw_p1) and np.isfinite(exec_raw_p2)
+
+    out["signal_raw_implied_p1"] = out["raw_implied_p1"] if "raw_implied_p1" in out.columns else np.nan
+    out["signal_raw_implied_p2"] = out["raw_implied_p2"] if "raw_implied_p2" in out.columns else np.nan
+    out["next_raw_implied_p1"] = next_raw_p1
+    out["next_raw_implied_p2"] = next_raw_p2
+    out["next_pinnacle_p1"] = next_pinnacle_p1
+    out["next_pinnacle_p2"] = next_pinnacle_p2
+    out["has_next_odds_update"] = has_next
+    out["trade_price_p1"] = next_raw_p1
+    out["trade_price_p2"] = next_raw_p2
+    return out
+
+
+def _build_match_cumulative_pnl(bets: pd.DataFrame) -> np.ndarray:
+    """Aggregate bet PnL by match (chronological), then cumulative sum."""
+    if bets.empty:
+        return np.array([])
+    event_order = (
+        bets.groupby("event_id", as_index=False)
+        .agg(event_start_date=("event_start_date", "first"))
+        .sort_values(["event_start_date", "event_id"], na_position="last")
+    )
+    pnl_by_event = bets.groupby("event_id")["pnl"].sum()
+    ordered_pnl = event_order["event_id"].map(pnl_by_event).fillna(0.0).to_numpy(dtype=float)
+    return np.cumsum(ordered_pnl)
+
+
 def run_backtest(
     test: pd.DataFrame,
-    baseline_pred: np.ndarray,
-    adjusted_pred: np.ndarray,
+    adjusted_p1: np.ndarray,
+    adjusted_p2: np.ndarray,
     threshold: float = 0.01,
+    min_trade_gap_seconds: int = MIN_TRADE_GAP_SECONDS,
 ) -> dict[str, Any]:
-    """Backtest two-sided strategy at de-vig prices.
+    """Backtest symmetric two-sided strategy with next-odds-update execution.
 
-    - Buy P1 when adjusted_prob > devig_p1 + threshold (price = devig_p1)
-    - Buy P2 when adjusted_prob < devig_p1 - threshold (price = devig_p2)
+    - Signals use current-row adjusted vs raw implied probabilities
+    - Execution price uses raw implied from the next odds update in the same match
+    - Buy P1 when adjusted_prob_p1 > raw_implied_p1 + threshold
+    - Buy P2 when adjusted_prob_p2 > raw_implied_p2 + threshold
+    - If both fire, take the side with the larger edge
+    - Skip trades with no later odds update in the match
+    - At most one trade per match every min_trade_gap_seconds (default 1 minute)
+    - Each bet is 1 unit (cost = trade price, payout = 1 if win)
     """
     df = test.copy()
-    df["devig_p1"] = baseline_pred
+    if "odds_no_vig_p1" in df.columns:
+        df["devig_p1"] = pd.to_numeric(df["odds_no_vig_p1"], errors="coerce")
+    else:
+        df["devig_p1"] = np.nan
     if "odds_no_vig_p2" in df.columns:
         df["devig_p2"] = pd.to_numeric(df["odds_no_vig_p2"], errors="coerce").fillna(1.0 - df["devig_p1"])
     else:
         df["devig_p2"] = 1.0 - df["devig_p1"]
-    df["adjusted_prob"] = adjusted_pred
+    df["adjusted_prob_p1"] = adjusted_p1
+    df["adjusted_prob_p2"] = adjusted_p2
 
-    df = df.sort_values(
-        ["event_start_date", "seq" if "seq" in df.columns else "event_id"],
-        na_position="last",
-    ).reset_index(drop=True)
+    raw_p1 = pd.to_numeric(df.get("odds_implied_p1"), errors="coerce")
+    raw_p2 = pd.to_numeric(df.get("odds_implied_p2"), errors="coerce")
+    if raw_p1.isna().all() or raw_p2.isna().all():
+        raw_p1 = 1.0 / pd.to_numeric(df["odds_p1_price"], errors="coerce")
+        raw_p2 = 1.0 / pd.to_numeric(df["odds_p2_price"], errors="coerce")
+    df["raw_implied_p1"] = raw_p1
+    df["raw_implied_p2"] = raw_p2
 
-    p1_signal = df["adjusted_prob"] > df["devig_p1"] + threshold
-    p2_signal = df["adjusted_prob"] < df["devig_p1"] - threshold
+    sort_cols = ["event_start_date", "event_id"]
+    if "ut" in df.columns:
+        sort_cols.append("ut")
+    if "seq" in df.columns:
+        sort_cols.append("seq")
+    df = df.sort_values(sort_cols, na_position="last").reset_index(drop=True)
+    df = _add_next_odds_execution_prices(df)
 
-    df["side"] = np.where(p1_signal, "P1", np.where(p2_signal, "P2", ""))
-    df["bet_cost"] = np.where(p1_signal, df["devig_p1"], np.where(p2_signal, df["devig_p2"], 0.0))
+    p1_edge = df["adjusted_prob_p1"] - df["raw_implied_p1"] - threshold
+    p2_edge = df["adjusted_prob_p2"] - df["raw_implied_p2"] - threshold
+    p1_signal = p1_edge > 0
+    p2_signal = p2_edge > 0
+    side_candidate = np.where(
+        p1_signal & p2_signal,
+        np.where(p1_edge >= p2_edge, "P1", "P2"),
+        np.where(p1_signal, "P1", np.where(p2_signal, "P2", "")),
+    )
+
+    side: list[str] = []
+    last_trade_ut: dict[str, float] = {}
+    for i in range(len(df)):
+        candidate = side_candidate[i]
+        if candidate == "" or not bool(df.at[i, "has_next_odds_update"]):
+            side.append("")
+            continue
+        if "ut" not in df.columns:
+            side.append(candidate)
+            continue
+        event_id = str(df.at[i, "event_id"])
+        row_ut = float(df.at[i, "ut"])
+        prev_ut = last_trade_ut.get(event_id)
+        if prev_ut is not None and (row_ut - prev_ut) < min_trade_gap_seconds:
+            side.append("")
+            continue
+        side.append(candidate)
+        last_trade_ut[event_id] = row_ut
+
+    df["side"] = side
+    p1_trade = df["side"] == "P1"
+    p2_trade = df["side"] == "P2"
+    df["bet_cost"] = np.where(
+        p1_trade,
+        df["trade_price_p1"],
+        np.where(p2_trade, df["trade_price_p2"], 0.0),
+    )
     p2_wins = 1.0 - df[TARGET_COL]
-    df["payout"] = np.where(p1_signal, df[TARGET_COL], np.where(p2_signal, p2_wins, 0.0))
+    df["payout"] = np.where(p1_trade, df[TARGET_COL], np.where(p2_trade, p2_wins, 0.0))
     df["pnl"] = df["payout"] - df["bet_cost"]
-    df["cum_pnl"] = df["pnl"].cumsum()
-    df["cum_wagered"] = df["bet_cost"].cumsum()
 
-    bets = df.loc[df["side"] != ""]
-    p1_bets = df.loc[p1_signal]
-    p2_bets = df.loc[p2_signal]
-    total_wagered = float(bets["bet_cost"].sum())
-    total_pnl = float(bets["pnl"].sum())
-    win_rate = float(bets["payout"].mean()) if len(bets) > 0 else 0.0
+    bets = df.loc[df["side"] != ""].copy()
+    p1_bets = df.loc[p1_trade]
+    p2_bets = df.loc[p2_trade]
+    total_wagered = float(bets["bet_cost"].sum()) if len(bets) else 0.0
+    total_pnl = float(bets["pnl"].sum()) if len(bets) else 0.0
+    if len(bets) > 0:
+        win_rate = float((bets["payout"] > 0).mean())
+    else:
+        win_rate = 0.0
     roi = total_pnl / total_wagered if total_wagered > 0 else 0.0
 
     edges: list[float] = []
     if len(p1_bets) > 0:
-        edges.extend((p1_bets["adjusted_prob"] - p1_bets["devig_p1"]).tolist())
+        edges.extend((p1_bets["adjusted_prob_p1"] - p1_bets["trade_price_p1"]).tolist())
     if len(p2_bets) > 0:
-        edges.extend(((1.0 - p2_bets["adjusted_prob"]) - p2_bets["devig_p2"]).tolist())
+        edges.extend((p2_bets["adjusted_prob_p2"] - p2_bets["trade_price_p2"]).tolist())
     avg_edge = float(np.mean(edges)) if edges else 0.0
+
+    match_cum_pnl = _build_match_cumulative_pnl(bets)
 
     return {
         "df": df,
@@ -376,13 +716,14 @@ def run_backtest(
         "n_p1_bets": int(len(p1_bets)),
         "n_p2_bets": int(len(p2_bets)),
         "n_rows": len(df),
+        "n_matches": int(bets["event_id"].nunique()) if len(bets) else 0,
         "total_wagered": total_wagered,
         "total_pnl": total_pnl,
         "win_rate": win_rate,
         "roi": roi,
         "avg_edge": avg_edge,
-        "cum_pnl_series": df["cum_pnl"].to_numpy(),
-        "cum_wagered_series": df["cum_wagered"].to_numpy(),
+        "cum_pnl_series": match_cum_pnl,
+        "cum_wagered_series": np.array([]),
     }
 
 
@@ -455,7 +796,7 @@ def pnl_svg_chart(backtest: dict[str, Any]) -> str:
   <line x1="{margin_l}" y1="{margin_t + plot_h}" x2="{margin_l + plot_w}" y2="{margin_t + plot_h}" stroke="#d0d7de" stroke-width="1.5"/>
   {y_tick_labels}
   {x_labels}
-  <text x="{margin_l + plot_w / 2:.0f}" y="{height - 8}" text-anchor="middle" font-size="12" fill="#57606a">Bet number (chronological)</text>
+  <text x="{margin_l + plot_w / 2:.0f}" y="{height - 8}" text-anchor="middle" font-size="12" fill="#57606a">Match index (chronological)</text>
   <text x="20" y="{margin_t + plot_h / 2:.0f}" text-anchor="middle" font-size="12" fill="#57606a" transform="rotate(-90 20 {margin_t + plot_h / 2:.0f})">Cumulative PnL</text>
   <text x="{margin_l + plot_w - 5}" y="{y_pos(cum_pnl[-1]) - 8:.1f}" text-anchor="end" font-size="11" fill="#0969da" font-weight="bold">Final: {cum_pnl[-1]:+.2f}</text>
 </svg>"""
@@ -547,7 +888,7 @@ def multi_threshold_pnl_svg(backtests: dict[float, dict[str, Any]]) -> str:
   <line x1="{margin_l}" y1="{margin_t + plot_h}" x2="{margin_l + plot_w}" y2="{margin_t + plot_h}" stroke="#d0d7de" stroke-width="1.5"/>
   {y_tick_labels}
   {x_labels}
-  <text x="{margin_l + plot_w / 2:.0f}" y="{height - 8}" text-anchor="middle" font-size="12" fill="#57606a">Row index (chronological)</text>
+  <text x="{margin_l + plot_w / 2:.0f}" y="{height - 8}" text-anchor="middle" font-size="12" fill="#57606a">Match index (chronological)</text>
   <text x="20" y="{margin_t + plot_h / 2:.0f}" text-anchor="middle" font-size="12" fill="#57606a" transform="rotate(-90 20 {margin_t + plot_h / 2:.0f})">Cumulative PnL</text>
   {legend}
 </svg>"""
@@ -570,6 +911,9 @@ def build_report(
     backtest: dict[str, Any],
     split_info: dict[str, Any],
     backtests: dict[float, dict[str, Any]] | None = None,
+    adjustment_comparison: dict[str, Any] | None = None,
+    xgb_shap: list[dict[str, float | str]] | None = None,
+    xgb_features: list[str] | None = None,
 ) -> str:
     css = """
     body { font-family: Arial, sans-serif; margin: 28px; color: #1f2328; line-height: 1.45; }
@@ -588,6 +932,15 @@ def build_report(
     .delta-pos { color: #1a7f37; font-weight: 600; }
     .delta-neg { color: #cf222e; font-weight: 600; }
     .formula { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; padding: 14px; font-family: monospace; font-size: 14px; margin: 12px 0; }
+    .tab-bar { display: flex; gap: 4px; border-bottom: 1px solid #d0d7de; margin: 24px 0 0; }
+    .tab-btn { padding: 10px 20px; border: 1px solid #d0d7de; border-bottom: none; background: #f6f8fa; cursor: pointer; border-radius: 8px 8px 0 0; font-size: 14px; }
+    .tab-btn.active { background: #fff; font-weight: 700; margin-bottom: -1px; }
+    .tab-panel { display: none; padding-top: 16px; }
+    .tab-panel.active { display: block; }
+    .bar-row { display: grid; grid-template-columns: 280px 1fr 70px; gap: 10px; align-items: center; margin: 6px 0; font-size: 13px; }
+    .bar-track { height: 12px; background: #f6f8fa; border: 1px solid #d0d7de; }
+    .bar-fill { height: 100%; background: #0969da; }
+    .bar-label { overflow-wrap: anywhere; }
     """
 
     # Overall comparison table
@@ -657,6 +1010,12 @@ def build_report(
             row.append(fmt(r.get(f"{name}_auc")))
         for name in ["baseline", "adjusted"]:
             row.append(fmt(r.get(f"{name}_brier")))
+        row.extend([
+            f"{int(r.get('n_bets', 0)):,}",
+            fmt(r.get("pnl"), 2) if r.get("pnl") is not None else "",
+            fmt(r.get("turnover"), 2) if r.get("turnover") is not None else "",
+            fmt_pct(r.get("rot")) if r.get("rot") is not None else "",
+        ])
         seg_rows.append(row)
 
     # Factor group rows
@@ -672,7 +1031,86 @@ def build_report(
     )
     overall_html = html_table(["Model", "Rows", "AUC", "Accuracy", "Brier", "RMSE", "Log loss"], overall_rows)
     fresh_html = html_table(["Model", "Rows", "AUC", "Brier", "Log loss"], fresh_rows)
-    seg_html = html_table(["Segment", "Rows", "Base AUC", "Adj AUC", "Fact AUC", "Base Brier", "Adj Brier"], seg_rows)
+    seg_html = html_table(
+        ["Segment", "Rows", "Base AUC", "Adj AUC", "Fact AUC", "Base Brier", "Adj Brier",
+         "Bets", "PnL", "Turnover", "ROT"],
+        seg_rows,
+    )
+
+    xgb_fit_html = ""
+    xgb_delta_html = ""
+    xgb_thresh_html = ""
+    xgb_thresh_chart = ""
+    xgb_shap_html = ""
+    xgb_shap_table_html = ""
+    if adjustment_comparison:
+        baseline_m = adjustment_comparison.get("baseline", {})
+        xgb_m = adjustment_comparison.get("xgboost", {})
+        xgb_fit_rows = []
+        for label, m in [
+            ("Baseline (de-vig)", baseline_m),
+            ("XGBoost adjustment", xgb_m),
+        ]:
+            xgb_fit_rows.append([
+                label,
+                f"{int(m.get('rows', 0)):,}",
+                fmt(m.get("auc")),
+                fmt(m.get("brier")),
+                fmt(m.get("brier_p1")),
+                fmt(m.get("brier_p2")),
+                fmt(m.get("log_loss")),
+            ])
+        xgb_fit_html = html_table(
+            ["Model", "Rows", "AUC", "Combined Brier", "Brier P1", "Brier P2", "Log loss"],
+            xgb_fit_rows,
+        )
+
+        xgb_delta_rows = []
+        for metric in ["auc", "brier", "log_loss"]:
+            b = baseline_m.get(metric)
+            a = xgb_m.get(metric)
+            if b is not None and a is not None:
+                delta = a - b
+                better = delta > 0 if metric == "auc" else delta < 0
+                cls = "delta-pos" if better else "delta-neg"
+                delta_str = f"<span class='{cls}'>{delta:+.4f}</span>"
+            else:
+                delta_str = ""
+            xgb_delta_rows.append([metric.upper(), fmt(b), fmt(a), delta_str])
+        xgb_delta_html = html_table(
+            ["Metric", "Baseline (odds)", "XGBoost adjusted", "Delta (XGB - Baseline)"],
+            xgb_delta_rows,
+        )
+
+        xgb_bts = adjustment_comparison.get("backtests", {}).get("xgboost", {})
+        if xgb_bts:
+            xgb_thresh_rows = []
+            for thresh in sorted(xgb_bts.keys()):
+                bt = xgb_bts[thresh]
+                roi_cls = "delta-pos" if bt["roi"] > 0 else "delta-neg"
+                xgb_thresh_rows.append([
+                    f"{thresh:g}",
+                    f"{bt['n_bets']:,}",
+                    f"{bt.get('n_p1_bets', 0):,}",
+                    f"{bt.get('n_p2_bets', 0):,}",
+                    f"{bt['total_wagered']:.1f}",
+                    f"{bt['total_pnl']:+.2f}",
+                    f"{bt['win_rate']:.1%}",
+                    f"<span class='{roi_cls}'>{bt['roi']:+.2%}</span>",
+                    f"{bt['avg_edge']:.4f}",
+                ])
+            xgb_thresh_html = html_table(
+                ["Threshold", "Bets", "P1 bets", "P2 bets", "Wagered", "Total PnL", "Win rate", "ROI", "Avg edge"],
+                xgb_thresh_rows,
+            )
+            xgb_thresh_chart = multi_threshold_pnl_svg(xgb_bts)
+
+    if xgb_shap:
+        xgb_shap_html = shap_bar_chart(xgb_shap, "XGBoost SHAP Summary (test sample)")
+        xgb_shap_table_html = html_table(
+            ["Feature", "Mean |SHAP|", "Mean SHAP", "Feature/SHAP corr"],
+            shap_rows(xgb_shap),
+        )
 
     sig_stats_rows = []
     for s in sig_stats[:50]:
@@ -765,16 +1203,18 @@ def build_report(
 </head>
 <body>
   <h1>Adjusted Probability: De-vig Odds + Factor Adjustment</h1>
-  <p class="muted">Calibrates an additive adjustment on top of Pinnacle de-vig probability using
-  logistic regression. Only rows with Pinnacle odds and staleness &le; 5 min. 60/40 event-level time split.
-  Max 2 factors per group. Adjustment capped at &plusmn;{ADJUSTMENT_CAP:.2f} in logit space.</p>
+  <p class="muted">Calibrates a probability-space adjustment on Pinnacle de-vig odds using
+  dual-side Brier loss (P1 and P2). All rows with Pinnacle odds (no staleness filter). 60/40 event-level time split.
+  Max 2 factors per group. Uncapped probability-space adjustment.</p>
 
   <div class="formula">
-    adjusted_prob = sigmoid( logit(odds_no_vig_p1) + clip(adjustment, -{ADJUSTMENT_CAP:.2f}, {ADJUSTMENT_CAP:.2f}) )<br>
-    adjustment = standardized_factors &middot; beta  &nbsp;&nbsp;(logistic regression, odds logit as fixed offset)<br>
-    baseline_prob = sigmoid( logit(odds_no_vig_p1) )  &nbsp;&nbsp;(no adjustment)<br>
+    adjustment = standardized_factors &middot; beta<br>
+    adjusted_prob_p1 = devig_prob_p1 + adjustment<br>
+    adjusted_prob_p2 = devig_prob_p2 - adjustment<br>
     <br>
-    odds source: <b>Pinnacle only</b>  &nbsp;&nbsp;|&nbsp;&nbsp; max 2 factors per group  &nbsp;&nbsp;|&nbsp;&nbsp; staleness &le; 5 min
+    Calibration loss = mean[ (adj_p1 - y)^2 + (adj_p2 - (1-y))^2 ]<br>
+    <br>
+    odds source: <b>Pinnacle only</b>  &nbsp;&nbsp;|&nbsp;&nbsp; max 2 factors per group  &nbsp;&nbsp;|&nbsp;&nbsp; all odds staleness
   </div>
 
   <h2>How De-vig Probability Is Computed from Pinnacle Odds</h2>
@@ -800,7 +1240,7 @@ def build_report(
       &nbsp;&nbsp;no_vig_p1 = 0.5556 / 1.0317 = 0.5385 (53.85%)<br>
       &nbsp;&nbsp;no_vig_p2 = 0.4762 / 1.0317 = 0.4615 (46.15%)
     </div>
-    <p>The <b>odds_logit_p1</b> used as the offset is then: logit(no_vig_p1) = ln(0.5385 / 0.4615) = 0.1552</p>
+    <p>The baseline and adjusted probabilities use <b>no_vig_p1</b> and <b>no_vig_p2</b> from the steps above.</p>
   </div>
 
   <div class="grid">
@@ -811,91 +1251,166 @@ def build_report(
   </div>
 
   <div class="note">
-    <b>Models compared:</b>
-    <ul>
-      <li><b>Baseline</b> &mdash; raw Pinnacle de-vig implied probability (no factors)</li>
-      <li><b>Adjusted</b> &mdash; Pinnacle de-vig probability + scaled factor adjustment (logistic regression with offset)</li>
-      <li><b>Factors only</b> &mdash; logistic regression on selected factors alone, no odds prior (for reference)</li>
-    </ul>
-    The adjustment operates in <b>logit space</b>, hard-capped at &plusmn;{ADJUSTMENT_CAP:.2f} during calibration and prediction.
-    The odds logit is a fixed offset (coefficient = 1, not learned); only factor coefficients are calibrated.
-    Factor selection: top 2 per group by |z-stat| from first-pass full model.
+    <b>Shared setup:</b> Pinnacle de-vig odds baseline, 60/40 event-level time split, max 2 factors per group.
+    Use the tabs below to compare the <b>logistic regression</b> calibrator vs the <b>XGBoost</b> calibrator.
   </div>
-
-  <h2>Overall Comparison: Adjusted vs Baseline</h2>
-  <p>Positive delta in AUC (or negative in Brier/LogLoss) means the factor adjustment improves on raw odds.</p>
-  {delta_html}
 
   <h2>Train / Test Split</h2>
   <div class="note">
     <p>Events (matches) are sorted chronologically by <code>event_start_date</code>, then split:</p>
     <ul>
-      <li><b>Train (60%)</b> &mdash; earliest matches; used to calibrate factor coefficients</li>
-      <li><b>Test (40%)</b> &mdash; all remaining matches; used for evaluation and backtest (no validation period)</li>
+      <li><b>Train (60%)</b> &mdash; earliest matches; used to calibrate models</li>
+      <li><b>Test (40%)</b> &mdash; all remaining matches; used for evaluation and backtest</li>
     </ul>
-    <p>This <b>time-based event-level split</b> prevents data leakage: no match has rows in more than one split,
-    and the model is never trained on data from a later date than its test data.</p>
+    <p>XGBoost additionally holds out the latest 15% of train events for early stopping validation.</p>
   </div>
   {split_html}
 
-  <h2>Detailed Results (Pinnacle odds, staleness &le; 5 min)</h2>
-  {overall_html}
-
-  <h2>Fresh Odds Subset (0-1 min staleness only)</h2>
-  <div class="warn">When odds are very fresh, the bookmaker probability is most efficient.
-  Does the adjustment still help?</div>
-  {fresh_html}
-
-  <h2>Adjustment Magnitude: |Adjusted Probability - De-vig Probability|</h2>
-  <p>How much does the factor adjustment move the probability away from the bookmaker's de-vig estimate?
-  A small mean adjustment with improved accuracy means factors fine-tune odds efficiently.</p>
-  <div class="grid">
-    <div class="card"><div class="muted">Mean abs diff</div><div class="stat">{fmt(diff_stats.get('mean'))}</div></div>
-    <div class="card"><div class="muted">Median abs diff</div><div class="stat">{fmt(diff_stats.get('median'))}</div></div>
-    <div class="card"><div class="muted">90th pctile</div><div class="stat">{fmt(diff_stats.get('p90'))}</div></div>
-    <div class="card"><div class="muted">99th pctile</div><div class="stat">{fmt(diff_stats.get('p99'))}</div></div>
-  </div>
-  {diff_bins_html}
-
-  <h2>Backtest: Two-Sided Strategy (P1 and P2)</h2>
-  <div class="note">
-    <p><b>Strategy:</b> At each row in the test set:</p>
-    <ul>
-      <li><b>Buy P1</b> if <code>adjusted_prob &gt; devig_p1 + threshold</code> at price = <code>devig_p1</code></li>
-      <li><b>Buy P2</b> if <code>adjusted_prob &lt; devig_p1 - threshold</code> at price = <code>devig_p2</code></li>
-      <li>No bet if neither condition holds</li>
-    </ul>
-    <ul>
-      <li>P1 win: payout = 1, profit = 1 - devig_p1</li>
-      <li>P1 lose: payout = 0, profit = -devig_p1</li>
-      <li>P2 win: payout = 1, profit = 1 - devig_p2</li>
-      <li>P2 lose: payout = 0, profit = -devig_p2</li>
-    </ul>
-    <p>Each bet is for 1 unit. Tested across thresholds from 0.005 to 0.05.</p>
+  <div class="tab-bar">
+    <button type="button" class="tab-btn active" data-tab="tab-regression" onclick="showTab('tab-regression')">Logistic Regression</button>
+    <button type="button" class="tab-btn" data-tab="tab-xgboost" onclick="showTab('tab-xgboost')">XGBoost</button>
   </div>
 
-  <h3>Threshold Comparison</h3>
-  {thresh_html}
+  <div id="tab-regression" class="tab-panel active">
+    <div class="note">
+      <b>Models compared:</b>
+      <ul>
+        <li><b>Baseline</b> &mdash; Pinnacle de-vig implied probability (no factors)</li>
+        <li><b>Adjusted</b> &mdash; devig P1/P2 &plusmn; linear factor adjustment (dual-side Brier calibration)</li>
+        <li><b>Factors only</b> &mdash; logistic regression on selected factors alone, no odds prior (for reference)</li>
+      </ul>
+      The adjustment operates in <b>probability space</b> with no hard cap during calibration or prediction.
+      Both adjusted P1 and adjusted P2 contribute to the training loss.
+    </div>
 
-  <h3>Cumulative PnL by Threshold</h3>
-  {thresh_chart}
+    <div class="formula">
+      adjustment = standardized_factors &middot; beta<br>
+      adjusted_prob_p1 = devig_prob_p1 + adjustment<br>
+      adjusted_prob_p2 = devig_prob_p2 - adjustment<br>
+      <br>
+      Calibration loss = mean[ (adj_p1 - y)^2 + (adj_p2 - (1-y))^2 ]
+    </div>
 
-  <h2>Segment Analysis</h2>
-  <p>AUC by staleness, match progression, and league. If adjusted consistently beats baseline,
-  factors add value on top of odds.</p>
-  {seg_html}
+    <h2>Overall Comparison: Adjusted vs Baseline</h2>
+    <p>Positive delta in AUC (or negative in Brier/LogLoss) means the factor adjustment improves on raw odds.</p>
+    {delta_html}
 
-  <h2>Significant Factor Adjustments (p &lt; 0.05)</h2>
-  <p>Factors with statistically significant coefficients in the adjustment model.
-  Positive coefficient means the factor pushes probability toward P1 winning (above what odds imply).</p>
-  {sig_html}
+    <h2>Detailed Results (Pinnacle odds, all staleness)</h2>
+    {overall_html}
 
-  <h2>All Factor Coefficients</h2>
-  {all_stats_html}
+    <h2>Fresh Odds Subset (0-1 min staleness only)</h2>
+    <div class="warn">When odds are very fresh, the bookmaker probability is most efficient.
+    Does the adjustment still help?</div>
+    {fresh_html}
 
-  <h2>Factor Groups</h2>
-  {factor_groups_html}
+    <h2>Adjustment Magnitude: |Adjusted Probability - De-vig Probability|</h2>
+    <p>How much does the factor adjustment move the probability away from the bookmaker's de-vig estimate?
+    A small mean adjustment with improved accuracy means factors fine-tune odds efficiently.</p>
+    <div class="grid">
+      <div class="card"><div class="muted">Mean abs diff</div><div class="stat">{fmt(diff_stats.get('mean'))}</div></div>
+      <div class="card"><div class="muted">Median abs diff</div><div class="stat">{fmt(diff_stats.get('median'))}</div></div>
+      <div class="card"><div class="muted">90th pctile</div><div class="stat">{fmt(diff_stats.get('p90'))}</div></div>
+      <div class="card"><div class="muted">99th pctile</div><div class="stat">{fmt(diff_stats.get('p99'))}</div></div>
+    </div>
+    {diff_bins_html}
 
+    <h2>Backtest: Two-Sided Strategy (P1 and P2)</h2>
+    <div class="note">
+      <p><b>Strategy:</b> At each row in the test set:</p>
+      <ul>
+        <li><b>Buy P1</b> if <code>adjusted_prob_p1 &gt; raw_implied_p1 + threshold</code></li>
+        <li><b>Buy P2</b> if <code>adjusted_prob_p2 &gt; raw_implied_p2 + threshold</code></li>
+        <li>Execution price = raw implied from the <b>next odds update</b> in the same match</li>
+        <li>If both fire, take the side with the larger edge</li>
+        <li>No bet if neither condition holds or no later odds update exists</li>
+        <li>At most one trade per match every {MIN_TRADE_GAP_SECONDS} seconds</li>
+      </ul>
+      <ul>
+        <li>PnL chart: cumulative sum of per-match aggregated PnL</li>
+        <li>Each bet is 1 unit (cost = trade price, payout = 1 if win)</li>
+      </ul>
+      <p>Signal uses current-row odds; fill uses the next Pinnacle snapshot price.
+      Thresholds: {", ".join(f"{t:g}" for t in BACKTEST_THRESHOLDS)}.</p>
+    </div>
+
+    <h3>Threshold Comparison</h3>
+    {thresh_html}
+
+    <h3>Cumulative PnL by Threshold</h3>
+    {thresh_chart}
+
+    <h2>Segment Analysis</h2>
+    <p>AUC by staleness, match progression, and league. Staleness buckets: 0-1, 1-2.5, 2.5-5, 5-7.5, 7.5-10 minutes.
+    PnL, turnover, and return-on-turnover (ROT) use 1-unit backtest trades at threshold {SEGMENT_BACKTEST_THRESHOLD}.</p>
+    {seg_html}
+
+    <h2>Significant Factor Adjustments (p &lt; 0.05)</h2>
+    <p>Factors with statistically significant coefficients in the adjustment model.
+    Positive coefficient means the factor pushes probability toward P1 winning (above what odds imply).</p>
+    {sig_html}
+
+    <h2>All Factor Coefficients</h2>
+    {all_stats_html}
+
+    <h2>Factor Groups</h2>
+    {factor_groups_html}
+  </div>
+
+  <div id="tab-xgboost" class="tab-panel">
+    <div class="note">
+      <b>XGBoost adjustment model</b> &mdash; binary classifier on selected factors plus <code>devig_p1</code> and
+      <code>devig_p2</code>. Validation split carved from train events for early stopping.
+      Predictions are converted to dual-side adjusted probabilities the same way as logistic:
+      <code>adjustment = pred_p1 - devig_p1</code>, then <code>adj_p2 = devig_p2 - adjustment</code>.
+    </div>
+
+    <div class="formula">
+      XGBoost predicts P(P1 wins) from factors + de-vig odds<br>
+      adjustment = xgb_pred_p1 - devig_p1<br>
+      adjusted_prob_p1 = devig_p1 + adjustment<br>
+      adjusted_prob_p2 = devig_p2 - adjustment<br>
+      <br>
+      Features ({len(xgb_features or [])}): {", ".join(xgb_features or [])}
+    </div>
+
+    <h2>Overall Comparison: XGBoost vs Baseline</h2>
+    {xgb_delta_html}
+
+    <h2>Detailed Results (test set)</h2>
+    {xgb_fit_html}
+
+    <h2>Backtest: Two-Sided Strategy</h2>
+    <div class="note">
+      Same backtest rules as the logistic tab: dual-side signals, next-update fill, 1-unit bets,
+      {MIN_TRADE_GAP_SECONDS}s cooldown per match.
+    </div>
+
+    <h3>Threshold Comparison</h3>
+    {xgb_thresh_html}
+
+    <h3>Cumulative PnL by Threshold</h3>
+    {xgb_thresh_chart}
+
+    <h2>SHAP Feature Importance</h2>
+    <p>Mean absolute SHAP values on a random test sample ({len(xgb_shap or [])} features ranked).
+    Shows which inputs drive XGBoost probability shifts beyond the de-vig baseline.</p>
+    {xgb_shap_html}
+    <h3>Top SHAP Features</h3>
+    {xgb_shap_table_html}
+  </div>
+
+  <script>
+    function showTab(id) {{
+      document.querySelectorAll('.tab-panel').forEach(function(panel) {{
+        panel.classList.remove('active');
+      }});
+      document.querySelectorAll('.tab-btn').forEach(function(btn) {{
+        btn.classList.remove('active');
+      }});
+      document.getElementById(id).classList.add('active');
+      document.querySelector('[data-tab="' + id + '"]').classList.add('active');
+    }}
+  </script>
 </body>
 </html>
 """
@@ -922,15 +1437,17 @@ def main() -> int:
     print(f"   {len(factor_features)} factor features")
     print()
 
-    # Step 3: Filter to rows with odds and <=5 min staleness
-    print("3. Filtering to rows with Pinnacle odds and <=5 min staleness...")
+    # Step 3: Filter to rows with odds (no staleness cap)
+    print("3. Filtering to rows with Pinnacle odds (no staleness filter)...")
     df = df[df["has_odds"] == 1].copy()
-    df["odds_logit_p1"] = df["odds_no_vig_p1"].apply(
-        lambda x: float(logit(np.array([x]))[0]) if pd.notna(x) and 0 < x < 1 else 0.0
-    )
-    before = len(df)
-    df = df[(df["odds_age_seconds"] >= 0) & (df["odds_age_seconds"] <= 300)].copy()
-    print(f"   {before:,} -> {len(df):,} rows after staleness filter ({df['event_id'].nunique()} matches)")
+    df["devig_p1"] = pd.to_numeric(df["odds_no_vig_p1"], errors="coerce")
+    df["devig_p2"] = pd.to_numeric(df["odds_no_vig_p2"], errors="coerce").fillna(1.0 - df["devig_p1"])
+    if "odds_age_seconds" in df.columns:
+        forward_rows = int((df["odds_age_seconds"] < 0).sum())
+        if forward_rows:
+            df = df[df["odds_age_seconds"] >= 0].copy()
+            print(f"   Excluded {forward_rows:,} rows with forward-looking odds (age < 0)")
+    print(f"   {len(df):,} rows with odds ({df['event_id'].nunique()} matches)")
     print()
 
     # Step 4: Split data (60% train, 40% test — no validation)
@@ -951,24 +1468,30 @@ def main() -> int:
     print(f"   Test:  {len(test):,} rows ({test['event_id'].nunique()} matches)")
     print()
 
-    # Step 5: Baseline prediction (raw de-vig odds)
+    # Step 5: Baseline prediction (de-vig odds, no adjustment)
     print("5. Computing baseline (de-vig Pinnacle odds, no adjustment)...")
-    baseline_pred = sigmoid(test["odds_logit_p1"].to_numpy(dtype=float))
-    baseline_metrics = evaluate_predictions(test[TARGET_COL].to_numpy(dtype=float), baseline_pred)
-    print(f"   Baseline: AUC={fmt(baseline_metrics['auc'])} Brier={fmt(baseline_metrics['brier'])} LogLoss={fmt(baseline_metrics['log_loss'])}")
+    y_test = test[TARGET_COL].to_numpy(dtype=float)
+    baseline_pred = test["devig_p1"].to_numpy(dtype=float)
+    baseline_p2_pred = test["devig_p2"].to_numpy(dtype=float)
+    baseline_metrics = evaluate_dual_predictions(y_test, baseline_pred, baseline_p2_pred)
+    print(f"   Baseline: AUC={fmt(baseline_metrics['auc'])} Brier={fmt(baseline_metrics['brier'])} "
+          f"(P1={fmt(baseline_metrics['brier_p1'])}, P2={fmt(baseline_metrics['brier_p2'])})")
     print()
 
     # Step 6: First pass — train with all factors to get significance
     print("6. First pass: training with all factors for feature selection...")
     x_train = fill_matrix(train, train, factor_features)
     y_train = train[TARGET_COL].to_numpy(dtype=float)
-    offset_train = train["odds_logit_p1"].to_numpy(dtype=float)
+    devig_p1_train = train["devig_p1"].to_numpy(dtype=float)
+    devig_p2_train = train["devig_p2"].to_numpy(dtype=float)
 
-    model_pass1 = fit_logistic_with_offset(
-        x_train, y_train, offset_train,
-        l2=0.02, learning_rate=0.06, epochs=500, cap=ADJUSTMENT_CAP,
+    model_pass1 = fit_probability_adjustment(
+        x_train, y_train, devig_p1_train, devig_p2_train,
+        l2=0.02, learning_rate=0.06, epochs=500,
     )
-    stats_pass1 = offset_logistic_stats(model_pass1, train, "odds_logit_p1", TARGET_COL, factor_features)
+    stats_pass1 = probability_adjustment_stats(
+        model_pass1, train, "devig_p1", "devig_p2", TARGET_COL, factor_features,
+    )
 
     # Select top 2 factors per group by |z-stat|
     selected_features = select_top_factors_per_group(stats_pass1, factor_groups, max_per_group=2)
@@ -980,21 +1503,42 @@ def main() -> int:
     print()
 
     # Step 7: Second pass — retrain with selected factors only
-    print("7. Second pass: training with selected factors...")
+    print("7. Second pass: training with selected factors (dual-side Brier)...")
     x_train_sel = fill_matrix(train, train, selected_features)
-    model = fit_logistic_with_offset(
-        x_train_sel, y_train, offset_train,
-        l2=0.02, learning_rate=0.06, epochs=500, cap=ADJUSTMENT_CAP,
+    model = fit_probability_adjustment(
+        x_train_sel, y_train, devig_p1_train, devig_p2_train,
+        l2=0.02, learning_rate=0.06, epochs=500,
     )
-    print(f"   Adjustment cap: ±{ADJUSTMENT_CAP:.2f} (logit space)")
 
-    adjusted_pred = predict_with_offset(
+    devig_p1_test = test["devig_p1"].to_numpy(dtype=float)
+    devig_p2_test = test["devig_p2"].to_numpy(dtype=float)
+    adjusted_pred, adjusted_p2_pred, adjustment_pred = predict_adjusted_probs(
         model,
         fill_matrix(train, test, selected_features),
-        test["odds_logit_p1"].to_numpy(dtype=float),
+        devig_p1_test,
+        devig_p2_test,
     )
-    adjusted_metrics = evaluate_predictions(test[TARGET_COL].to_numpy(dtype=float), adjusted_pred)
-    print(f"   Adjusted: AUC={fmt(adjusted_metrics['auc'])} Brier={fmt(adjusted_metrics['brier'])} LogLoss={fmt(adjusted_metrics['log_loss'])}")
+    adjusted_metrics = evaluate_dual_predictions(y_test, adjusted_pred, adjusted_p2_pred)
+    print(f"   Logistic: AUC={fmt(adjusted_metrics['auc'])} Brier={fmt(adjusted_metrics['brier'])} "
+          f"(P1={fmt(adjusted_metrics['brier_p1'])}, P2={fmt(adjusted_metrics['brier_p2'])})")
+    print()
+
+    # Step 7b: XGBoost adjustment model (same selected features + de-vig odds)
+    print("7b. Training XGBoost adjustment model...")
+    xgb_features = selected_features + ["devig_p1", "devig_p2"]
+    train_fit, val_fit = split_train_validation(train)
+    print(f"   XGB train/val events: {train_fit['event_id'].nunique()} / {val_fit['event_id'].nunique()}")
+    xgb_booster, xgb_p1_pred = train_xgboost_adjustment(
+        train_fit, val_fit, test, xgb_features,
+    )
+    xgb_adj_p1, xgb_adj_p2, _ = dual_adjusted_probs_from_p1(
+        xgb_p1_pred, devig_p1_test, devig_p2_test,
+    )
+    xgb_metrics = evaluate_dual_predictions(y_test, xgb_adj_p1, xgb_adj_p2)
+    print(f"   XGBoost: AUC={fmt(xgb_metrics['auc'])} Brier={fmt(xgb_metrics['brier'])} "
+          f"(P1={fmt(xgb_metrics['brier_p1'])}, P2={fmt(xgb_metrics['brier_p2'])})")
+    print("   Computing XGBoost SHAP summary...")
+    xgb_shap = shap_summary(xgb_booster, train, test, xgb_features)
     print()
 
     # Step 8: Factors-only model (no odds prior, for reference)
@@ -1011,18 +1555,33 @@ def main() -> int:
 
     # Step 9: Compute regression stats for selected factors
     print("9. Computing factor t-stats and p-values...")
-    stats = offset_logistic_stats(model, train, "odds_logit_p1", TARGET_COL, selected_features)
+    stats = probability_adjustment_stats(
+        model, train, "devig_p1", "devig_p2", TARGET_COL, selected_features,
+    )
     sig_count = sum(1 for s in stats if s["p_value"] is not None and s["p_value"] < 0.05)
     print(f"   {sig_count} significant factors (p < 0.05)")
     print()
 
-    # Step 9: Segment analysis
-    print("9. Segment analysis...")
-    segments = segment_analysis(test, baseline_pred, adjusted_pred, factors_pred)
+    # Step 9: Segment analysis (with backtest PnL / ROT at reference threshold)
+    print(f"9. Segment analysis (backtest threshold={SEGMENT_BACKTEST_THRESHOLD})...")
+    segment_bt = run_backtest(test, adjusted_pred, adjusted_p2_pred, threshold=SEGMENT_BACKTEST_THRESHOLD)
+    segment_df = segment_bt["df"]
+    sort_cols = ["event_start_date", "event_id"]
+    if "ut" in test.columns:
+        sort_cols.append("ut")
+    if "seq" in test.columns:
+        sort_cols.append("seq")
+    sorted_test = test.sort_values(sort_cols, na_position="last")
+    factors_pred_sorted = predict_logistic(
+        factors_model, fill_matrix(train, sorted_test, selected_features),
+    )
+    segments = segment_analysis(segment_df, factors_pred_sorted)
     for r in segments:
+        rot = fmt_pct(r.get("rot")) if r.get("rot") is not None else "n/a"
         print(f"   {r['segment']}: {r['rows']} rows, "
               f"base_auc={fmt(r.get('baseline_auc'))}, "
-              f"adj_auc={fmt(r.get('adjusted_auc'))}")
+              f"adj_auc={fmt(r.get('adjusted_auc'))}, "
+              f"pnl={fmt(r.get('pnl'), 2)}, rot={rot}")
     print()
 
     # Step 11: Fresh odds subset (0-1 min staleness)
@@ -1030,16 +1589,18 @@ def main() -> int:
     fresh_test = test[(test["odds_age_seconds"] >= 0) & (test["odds_age_seconds"] < 60)]
     if len(fresh_test) > 0:
         fresh_y = fresh_test[TARGET_COL].to_numpy(dtype=float)
-        fresh_baseline = sigmoid(fresh_test["odds_logit_p1"].to_numpy(dtype=float))
-        fresh_adjusted = predict_with_offset(
+        fresh_baseline = fresh_test["devig_p1"].to_numpy(dtype=float)
+        fresh_baseline_p2 = fresh_test["devig_p2"].to_numpy(dtype=float)
+        fresh_adjusted_p1, fresh_adjusted_p2, _ = predict_adjusted_probs(
             model,
             fill_matrix(train, fresh_test, selected_features),
-            fresh_test["odds_logit_p1"].to_numpy(dtype=float),
+            fresh_baseline,
+            fresh_baseline_p2,
         )
         fresh_factors = predict_logistic(factors_model, fill_matrix(train, fresh_test, selected_features))
         fresh_subset = {
-            "baseline": evaluate_predictions(fresh_y, fresh_baseline),
-            "adjusted": evaluate_predictions(fresh_y, fresh_adjusted),
+            "baseline": evaluate_dual_predictions(fresh_y, fresh_baseline, fresh_baseline_p2),
+            "adjusted": evaluate_dual_predictions(fresh_y, fresh_adjusted_p1, fresh_adjusted_p2),
             "factors_only": evaluate_predictions(fresh_y, fresh_factors),
         }
         for name, m in fresh_subset.items():
@@ -1076,16 +1637,27 @@ def main() -> int:
     print()
 
     # Step 12: Run backtests at multiple thresholds
-    print("12. Running backtests across thresholds 0.005 to 0.05...")
-    thresholds = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05]
+    print("12. Running backtests across thresholds...")
+    thresholds = BACKTEST_THRESHOLDS
     backtests = {}
+    xgb_backtests = {}
     for thresh in thresholds:
-        bt = run_backtest(test, baseline_pred, adjusted_pred, threshold=thresh)
+        bt = run_backtest(test, adjusted_pred, adjusted_p2_pred, threshold=thresh)
         backtests[thresh] = bt
-        print(f"   thresh={thresh:.3f}: bets={bt['n_bets']:,} (P1={bt.get('n_p1_bets', 0):,}, P2={bt.get('n_p2_bets', 0):,}), "
-              f"wagered={bt['total_wagered']:.1f}, "
-              f"PnL={bt['total_pnl']:+.2f}, ROI={bt['roi']:+.2%}, win={bt['win_rate']:.1%}")
+        xgb_bt = run_backtest(test, xgb_adj_p1, xgb_adj_p2, threshold=thresh)
+        xgb_backtests[thresh] = xgb_bt
+        print(f"   thresh={thresh:g}: logistic PnL={bt['total_pnl']:+.2f} ROI={bt['roi']:+.2%} | "
+              f"xgb PnL={xgb_bt['total_pnl']:+.2f} ROI={xgb_bt['roi']:+.2%}")
     backtest = backtests[0.01]  # default for chart
+    adjustment_comparison = {
+        "baseline": baseline_metrics,
+        "logistic": adjusted_metrics,
+        "xgboost": xgb_metrics,
+        "backtests": {
+            "logistic": backtests,
+            "xgboost": xgb_backtests,
+        },
+    }
     print()
 
     # Step 13: Collect split info
@@ -1113,7 +1685,8 @@ def main() -> int:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(
         build_report(df, selected_features, factor_groups, overall, stats, segments,
-                     fresh_subset, diff_stats, diff_bins, backtest, split_info, backtests),
+                     fresh_subset, diff_stats, diff_bins, backtest, split_info, backtests,
+                     adjustment_comparison, xgb_shap, xgb_features),
         encoding="utf-8",
     )
     print(f"   Report: {OUTPUT_PATH}")
@@ -1122,14 +1695,16 @@ def main() -> int:
     # Summary
     print("=== Summary ===")
     print(f"  Baseline (Pinnacle de-vig):  AUC={fmt(baseline_metrics['auc'])} Brier={fmt(baseline_metrics['brier'])}")
-    print(f"  Adjusted (odds+factors):    AUC={fmt(adjusted_metrics['auc'])} Brier={fmt(adjusted_metrics['brier'])}")
+    print(f"  Logistic adjusted:          AUC={fmt(adjusted_metrics['auc'])} Brier={fmt(adjusted_metrics['brier'])}")
+    print(f"  XGBoost adjusted:           AUC={fmt(xgb_metrics['auc'])} Brier={fmt(xgb_metrics['brier'])}")
     print(f"  Factors only (no odds):     AUC={fmt(factors_metrics['auc'])} Brier={fmt(factors_metrics['brier'])}")
-    print(f"  Adjustment cap:           ±{ADJUSTMENT_CAP:.2f} (logit)")
     print(f"  Selected factors:           {len(selected_features)}")
     delta_auc = (adjusted_metrics['auc'] or 0) - (baseline_metrics['auc'] or 0)
     delta_brier = (adjusted_metrics['brier'] or 0) - (baseline_metrics['brier'] or 0)
-    print(f"  Delta AUC:  {delta_auc:+.4f}")
-    print(f"  Delta Brier: {delta_brier:+.4f}")
+    xgb_delta_auc = (xgb_metrics['auc'] or 0) - (baseline_metrics['auc'] or 0)
+    xgb_delta_brier = (xgb_metrics['brier'] or 0) - (baseline_metrics['brier'] or 0)
+    print(f"  Logistic delta AUC/Brier:   {delta_auc:+.4f} / {delta_brier:+.4f}")
+    print(f"  XGBoost delta AUC/Brier:    {xgb_delta_auc:+.4f} / {xgb_delta_brier:+.4f}")
 
     return 0
 
