@@ -62,7 +62,12 @@ WITH_ODDS_DIR = DATA_DIR / "with_pinnacle_odds"
 LOGIT_ADJUSTMENT_CAP = 0.06  # legacy logit-offset helpers only
 MIN_TRADE_GAP_SECONDS = 60  # minimum seconds between trades in the same match
 BACKTEST_THRESHOLDS = [0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.25]
-SEGMENT_BACKTEST_THRESHOLD = 0.15  # 0.1-0.15 threshold bucket
+PRIMARY_BACKTEST_THRESHOLD = 0.15  # pre-specified decision threshold
+SEGMENT_BACKTEST_THRESHOLD = PRIMARY_BACKTEST_THRESHOLD
+PROB_EPS = 1e-6
+FORBIDDEN_FEATURE_SUBSTRINGS = (
+    "match_winner", "target_", "winner_side", "game_winner", "future",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +237,70 @@ def train_xgboost_adjustment(
     """Train XGBoost on selected factors plus de-vig odds features."""
     booster, p1_pred = train_xgboost(train, validation, test, TARGET_COL, features)
     return booster, p1_pred
+
+
+def assert_no_forward_odds(df: pd.DataFrame) -> None:
+    """Reject rows where odds snapshots are timestamped after the row."""
+    if "odds_age_seconds" not in df.columns:
+        return
+    forward = int((pd.to_numeric(df["odds_age_seconds"], errors="coerce") < 0).sum())
+    if forward:
+        raise ValueError(f"Found {forward:,} rows with forward-looking odds (age < 0)")
+
+
+def assert_no_feature_leakage(features: list[str]) -> None:
+    leaked = [
+        feature for feature in features
+        if any(token in feature.lower() for token in FORBIDDEN_FEATURE_SUBSTRINGS)
+    ]
+    if leaked:
+        raise ValueError(f"Forbidden feature names in model set: {leaked}")
+
+
+def max_drawdown(cumulative: np.ndarray) -> float:
+    if len(cumulative) == 0:
+        return 0.0
+    peak = np.maximum.accumulate(cumulative)
+    return float(np.min(cumulative - peak))
+
+
+def profit_factor(pnl: np.ndarray) -> float | None:
+    wins = float(pnl[pnl > 0].sum())
+    losses = float(abs(pnl[pnl < 0].sum()))
+    if losses <= 0:
+        return None
+    return wins / losses
+
+
+def calibration_bins(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    n_bins: int = 10,
+) -> list[dict[str, float | int | str]]:
+    """Reliability bins for probability calibration checks."""
+    pred = np.clip(y_pred, PROB_EPS, 1.0 - PROB_EPS)
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    rows: list[dict[str, float | int | str]] = []
+    for idx in range(n_bins):
+        low, high = edges[idx], edges[idx + 1]
+        if idx == n_bins - 1:
+            mask = (pred >= low) & (pred <= high)
+        else:
+            mask = (pred >= low) & (pred < high)
+        count = int(mask.sum())
+        if count == 0:
+            continue
+        observed = float(y_true[mask].mean())
+        expected = float(pred[mask].mean())
+        rows.append({
+            "label": f"{low:.1f}-{high:.1f}",
+            "count": count,
+            "expected": expected,
+            "observed": observed,
+            "gap": observed - expected,
+        })
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +496,6 @@ def split_frames(df: pd.DataFrame, target_col: str) -> tuple[pd.DataFrame, pd.Da
 
 STALENESS_BINS = [0, 60, 150, 300, 450, 600]  # seconds: 0-1, 1-2.5, 2.5-5, 5-7.5, 7.5-10 min
 STALENESS_LABELS = ["0-1m", "1-2.5m", "2.5-5m", "5-7.5m", "7.5-10m"]
-PROB_EPS = 1e-6
 
 
 def _append_trade_stats(row: dict[str, Any], bets: pd.DataFrame) -> dict[str, Any]:
@@ -709,6 +777,7 @@ def run_backtest(
     avg_edge = float(np.mean(edges)) if edges else 0.0
 
     match_cum_pnl = _build_match_cumulative_pnl(bets)
+    bet_pnl = bets["pnl"].to_numpy(dtype=float) if len(bets) else np.array([])
 
     return {
         "df": df,
@@ -722,6 +791,8 @@ def run_backtest(
         "win_rate": win_rate,
         "roi": roi,
         "avg_edge": avg_edge,
+        "max_drawdown": max_drawdown(match_cum_pnl),
+        "profit_factor": profit_factor(bet_pnl),
         "cum_pnl_series": match_cum_pnl,
         "cum_wagered_series": np.array([]),
     }
@@ -914,6 +985,8 @@ def build_report(
     adjustment_comparison: dict[str, Any] | None = None,
     xgb_shap: list[dict[str, float | str]] | None = None,
     xgb_features: list[str] | None = None,
+    model_card: dict[str, Any] | None = None,
+    calibration: dict[str, list[dict[str, float | int | str]]] | None = None,
 ) -> str:
     css = """
     body { font-family: Arial, sans-serif; margin: 28px; color: #1f2328; line-height: 1.45; }
@@ -1127,6 +1200,40 @@ def build_report(
 
     factor_groups_html = html_table(["Group", "Count", "Features"], factor_group_rows)
 
+    model_card_html = ""
+    limitations_html = ""
+    if model_card:
+        card_rows = [[key, html.escape(str(value))] for key, value in model_card.items()]
+        model_card_html = html_table(["Field", "Value"], card_rows)
+        limitations = model_card.get("Known failure modes", "")
+        if limitations:
+            limitations_html = f"<div class='warn'>{html.escape(str(limitations))}</div>"
+
+    calibration_html = ""
+    if calibration:
+        cal_rows = []
+        baseline_bins = {row["label"]: row for row in calibration.get("baseline", [])}
+        adjusted_bins = {row["label"]: row for row in calibration.get("adjusted", [])}
+        for label in sorted(set(baseline_bins) | set(adjusted_bins)):
+            base = baseline_bins.get(label, {})
+            adj = adjusted_bins.get(label, {})
+            cal_rows.append([
+                label,
+                f"{int(base.get('count', 0)):,}",
+                fmt(base.get("expected")),
+                fmt(base.get("observed")),
+                fmt(base.get("gap")),
+                f"{int(adj.get('count', 0)):,}",
+                fmt(adj.get("expected")),
+                fmt(adj.get("observed")),
+                fmt(adj.get("gap")),
+            ])
+        calibration_html = html_table(
+            ["Bin", "Base n", "Base pred", "Base obs", "Base gap",
+             "Adj n", "Adj pred", "Adj obs", "Adj gap"],
+            cal_rows,
+        )
+
     # Adjustment difference distribution
     diff_bins_rows = []
     for b in diff_bins:
@@ -1169,7 +1276,7 @@ def build_report(
             bt = backtests[thresh]
             roi_cls = "delta-pos" if bt["roi"] > 0 else "delta-neg"
             thresh_rows.append([
-                f"{thresh:.3f}",
+                f"{thresh:g}{' *' if abs(thresh - PRIMARY_BACKTEST_THRESHOLD) < 1e-9 else ''}",
                 f"{bt['n_bets']:,}",
                 f"{bt.get('n_p1_bets', 0):,}",
                 f"{bt.get('n_p2_bets', 0):,}",
@@ -1177,10 +1284,13 @@ def build_report(
                 f"{bt['total_pnl']:+.2f}",
                 f"{bt['win_rate']:.1%}",
                 f"<span class='{roi_cls}'>{bt['roi']:+.2%}</span>",
+                fmt(bt.get("max_drawdown"), 2),
+                fmt(bt.get("profit_factor"), 2) if bt.get("profit_factor") is not None else "",
                 f"{bt['avg_edge']:.4f}",
             ])
         thresh_html = html_table(
-            ["Threshold", "Bets", "P1 bets", "P2 bets", "Wagered", "Total PnL", "Win rate", "ROI", "Avg edge"],
+            ["Threshold", "Bets", "P1 bets", "P2 bets", "Wagered", "Total PnL", "Win rate", "ROI",
+             "Max DD", "Profit factor", "Avg edge"],
             thresh_rows,
         )
         # Multi-threshold PnL chart
@@ -1266,6 +1376,11 @@ def build_report(
   </div>
   {split_html}
 
+  <h2>Model Card</h2>
+  {model_card_html}
+  <h3>Known Limitations</h3>
+  {limitations_html}
+
   <div class="tab-bar">
     <button type="button" class="tab-btn active" data-tab="tab-regression" onclick="showTab('tab-regression')">Logistic Regression</button>
     <button type="button" class="tab-btn" data-tab="tab-xgboost" onclick="showTab('tab-xgboost')">XGBoost</button>
@@ -1294,6 +1409,10 @@ def build_report(
     <h2>Overall Comparison: Adjusted vs Baseline</h2>
     <p>Positive delta in AUC (or negative in Brier/LogLoss) means the factor adjustment improves on raw odds.</p>
     {delta_html}
+
+    <h2>Probability Calibration (test set)</h2>
+    <p>Reliability bins for P1 win probability. Gaps near zero indicate good calibration.</p>
+    {calibration_html}
 
     <h2>Detailed Results (Pinnacle odds, all staleness)</h2>
     {overall_html}
@@ -1330,7 +1449,8 @@ def build_report(
         <li>Each bet is 1 unit (cost = trade price, payout = 1 if win)</li>
       </ul>
       <p>Signal uses current-row odds; fill uses the next Pinnacle snapshot price.
-      Thresholds: {", ".join(f"{t:g}" for t in BACKTEST_THRESHOLDS)}.</p>
+      Pre-specified primary threshold: <b>{PRIMARY_BACKTEST_THRESHOLD:g}</b> (marked *).
+      Other thresholds are exploratory sensitivity checks (multiple-testing risk).</p>
     </div>
 
     <h3>Threshold Comparison</h3>
@@ -1447,6 +1567,7 @@ def main() -> int:
         if forward_rows:
             df = df[df["odds_age_seconds"] >= 0].copy()
             print(f"   Excluded {forward_rows:,} rows with forward-looking odds (age < 0)")
+    assert_no_forward_odds(df)
     print(f"   {len(df):,} rows with odds ({df['event_id'].nunique()} matches)")
     print()
 
@@ -1466,6 +1587,9 @@ def main() -> int:
     test = work.loc[work["event_id"].isin(test_set)].copy()
     print(f"   Train: {len(train):,} rows ({train['event_id'].nunique()} matches)")
     print(f"   Test:  {len(test):,} rows ({test['event_id'].nunique()} matches)")
+    train_fit, val_fit = split_train_validation(train)
+    print(f"   Train-fit (feature selection): {len(train_fit):,} rows ({train_fit['event_id'].nunique()} matches)")
+    print(f"   Train-val (XGB early stop):    {len(val_fit):,} rows ({val_fit['event_id'].nunique()} matches)")
     print()
 
     # Step 5: Baseline prediction (de-vig odds, no adjustment)
@@ -1478,37 +1602,53 @@ def main() -> int:
           f"(P1={fmt(baseline_metrics['brier_p1'])}, P2={fmt(baseline_metrics['brier_p2'])})")
     print()
 
-    # Step 6: First pass — train with all factors to get significance
-    print("6. First pass: training with all factors for feature selection...")
-    x_train = fill_matrix(train, train, factor_features)
-    y_train = train[TARGET_COL].to_numpy(dtype=float)
-    devig_p1_train = train["devig_p1"].to_numpy(dtype=float)
-    devig_p2_train = train["devig_p2"].to_numpy(dtype=float)
+    # Step 6: First pass — feature selection on train-fit fold only (nested validation)
+    print("6. First pass: feature selection on train-fit fold (nested validation)...")
+    x_train_fit = fill_matrix(train_fit, train_fit, factor_features)
+    y_train_fit = train_fit[TARGET_COL].to_numpy(dtype=float)
+    devig_p1_train_fit = train_fit["devig_p1"].to_numpy(dtype=float)
+    devig_p2_train_fit = train_fit["devig_p2"].to_numpy(dtype=float)
 
     model_pass1 = fit_probability_adjustment(
-        x_train, y_train, devig_p1_train, devig_p2_train,
+        x_train_fit, y_train_fit, devig_p1_train_fit, devig_p2_train_fit,
         l2=0.02, learning_rate=0.06, epochs=500,
     )
     stats_pass1 = probability_adjustment_stats(
-        model_pass1, train, "devig_p1", "devig_p2", TARGET_COL, factor_features,
+        model_pass1, train_fit, "devig_p1", "devig_p2", TARGET_COL, factor_features,
     )
 
     # Select top 2 factors per group by |z-stat|
     selected_features = select_top_factors_per_group(stats_pass1, factor_groups, max_per_group=2)
-    print(f"   Selected {len(selected_features)} factors (max 2 per group)")
+    assert_no_feature_leakage(selected_features)
+    print(f"   Selected {len(selected_features)} factors (max 2 per group, train-fit only)")
     for grp, vals in factor_groups.items():
         selected_in_grp = [f for f in vals if f in selected_features]
         if selected_in_grp:
             print(f"     {grp}: {', '.join(selected_in_grp)}")
     print()
 
-    # Step 7: Second pass — retrain with selected factors only
+    # Step 7: Second pass — retrain with selected factors on full train
     print("7. Second pass: training with selected factors (dual-side Brier)...")
-    x_train_sel = fill_matrix(train, train, selected_features)
+    x_train = fill_matrix(train, train, selected_features)
+    y_train = train[TARGET_COL].to_numpy(dtype=float)
+    devig_p1_train = train["devig_p1"].to_numpy(dtype=float)
+    devig_p2_train = train["devig_p2"].to_numpy(dtype=float)
+    x_train_sel = x_train
     model = fit_probability_adjustment(
         x_train_sel, y_train, devig_p1_train, devig_p2_train,
         l2=0.02, learning_rate=0.06, epochs=500,
     )
+
+    val_adj_p1, val_adj_p2, _ = predict_adjusted_probs(
+        model,
+        fill_matrix(train, val_fit, selected_features),
+        val_fit["devig_p1"].to_numpy(dtype=float),
+        val_fit["devig_p2"].to_numpy(dtype=float),
+    )
+    val_metrics = evaluate_dual_predictions(
+        val_fit[TARGET_COL].to_numpy(dtype=float), val_adj_p1, val_adj_p2,
+    )
+    print(f"   Train-val check: AUC={fmt(val_metrics['auc'])} Brier={fmt(val_metrics['brier'])}")
 
     devig_p1_test = test["devig_p1"].to_numpy(dtype=float)
     devig_p2_test = test["devig_p2"].to_numpy(dtype=float)
@@ -1526,7 +1666,7 @@ def main() -> int:
     # Step 7b: XGBoost adjustment model (same selected features + de-vig odds)
     print("7b. Training XGBoost adjustment model...")
     xgb_features = selected_features + ["devig_p1", "devig_p2"]
-    train_fit, val_fit = split_train_validation(train)
+    assert_no_feature_leakage(xgb_features)
     print(f"   XGB train/val events: {train_fit['event_id'].nunique()} / {val_fit['event_id'].nunique()}")
     xgb_booster, xgb_p1_pred = train_xgboost_adjustment(
         train_fit, val_fit, test, xgb_features,
@@ -1648,7 +1788,7 @@ def main() -> int:
         xgb_backtests[thresh] = xgb_bt
         print(f"   thresh={thresh:g}: logistic PnL={bt['total_pnl']:+.2f} ROI={bt['roi']:+.2%} | "
               f"xgb PnL={xgb_bt['total_pnl']:+.2f} ROI={xgb_bt['roi']:+.2%}")
-    backtest = backtests[0.01]  # default for chart
+    backtest = backtests[PRIMARY_BACKTEST_THRESHOLD]
     adjustment_comparison = {
         "baseline": baseline_metrics,
         "logistic": adjusted_metrics,
@@ -1658,18 +1798,46 @@ def main() -> int:
             "xgboost": xgb_backtests,
         },
     }
-    print()
+    calibration = {
+        "baseline": calibration_bins(y_test, baseline_pred),
+        "adjusted": calibration_bins(y_test, adjusted_pred),
+    }
 
     # Step 13: Collect split info
     split_info = {
         "train_events": train["event_id"].nunique(),
         "train_rows": len(train),
+        "train_fit_events": train_fit["event_id"].nunique(),
+        "train_val_events": val_fit["event_id"].nunique(),
         "train_start": str(train["event_start_date"].min().date()) if train["event_start_date"].notna().any() else "N/A",
         "train_end": str(train["event_start_date"].max().date()) if train["event_start_date"].notna().any() else "N/A",
         "test_events": test["event_id"].nunique(),
         "test_rows": len(test),
         "test_start": str(test["event_start_date"].min().date()) if test["event_start_date"].notna().any() else "N/A",
         "test_end": str(test["event_start_date"].max().date()) if test["event_start_date"].notna().any() else "N/A",
+    }
+    primary_bt = backtests[PRIMARY_BACKTEST_THRESHOLD]
+    model_card = {
+        "Objective": "Improve in-play match-winner probability vs Pinnacle de-vig odds",
+        "Horizon": "Each in-play snapshot row; trade signal vs next odds update fill",
+        "Target": "target_p1_win (final match winner, constant within match)",
+        "Universe": "Pinnacle H2H tennis with enriched rolling metrics",
+        "Features": ", ".join(selected_features),
+        "Feature selection": "Top 2 per group by |z-stat| on train-fit fold only (nested)",
+        "Train window": f"{split_info['train_start']} to {split_info['train_end']} ({split_info['train_events']} matches)",
+        "Validation method": "15% latest train events for feature selection + XGB early stopping; 40% holdout test",
+        "Test window": f"{split_info['test_start']} to {split_info['test_end']} ({split_info['test_events']} matches)",
+        "Costs assumed": "1-unit bets; fill at next raw implied price; vig in raw price; no extra commission model",
+        "Primary threshold": f"{PRIMARY_BACKTEST_THRESHOLD:g}",
+        "Key metrics (test)": (
+            f"Logistic AUC {fmt(adjusted_metrics['auc'])}, Brier {fmt(adjusted_metrics['brier'])}; "
+            f"ROI {fmt_pct(primary_bt['roi'])}, max DD {fmt(primary_bt.get('max_drawdown'), 2)}"
+        ),
+        "Known failure modes": (
+            "Match-end label on all in-play rows; threshold sweep is exploratory; "
+            "no walk-forward refit; segments and calibration checked on same test split; "
+            "capacity and market impact not modeled."
+        ),
     }
     print(f"   Train: {split_info['train_events']} matches, {split_info['train_start']} to {split_info['train_end']}")
     print(f"   Test:  {split_info['test_events']} matches, {split_info['test_start']} to {split_info['test_end']}")
@@ -1686,7 +1854,7 @@ def main() -> int:
     OUTPUT_PATH.write_text(
         build_report(df, selected_features, factor_groups, overall, stats, segments,
                      fresh_subset, diff_stats, diff_bins, backtest, split_info, backtests,
-                     adjustment_comparison, xgb_shap, xgb_features),
+                     adjustment_comparison, xgb_shap, xgb_features, model_card, calibration),
         encoding="utf-8",
     )
     print(f"   Report: {OUTPUT_PATH}")
