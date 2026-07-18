@@ -27,7 +27,7 @@ backtest_output/
 !lewis-schedule/web/*.html
 !lewis-schedule/standalone/*.html
 !docs/index.html
-!lewis-schedule/standalone/*.html
+!docs/schedule.html
 *.pdf
 !SportsAPI/docs/
 !SportsAPI/docs/*.pdf

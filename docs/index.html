@@ -8,6 +8,8 @@
   <meta name="apple-mobile-web-app-title" content="Lewis Schedule" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#171a21" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
   <title>Lewis Schedule</title>
   <style>
 :root {
@@ -235,6 +237,10 @@ dialog::backdrop {
 
 #export-text {
   margin: 0 16px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  white-space: pre;
 }
 
 .toast {
@@ -690,29 +696,30 @@ function formatExportWeekTitle() {
 }
 
 function buildExportText() {
-  const lines = [`📅 *Lewis — Week of ${formatExportWeekTitle()}*`, ""];
+  const lines = [`📅 Lewis — Week of ${formatExportWeekTitle()}`, ""];
 
   for (const day of DAYS) {
-    lines.push(`*${DAY_NAMES[day]}*`);
+    lines.push(DAY_NAMES[day].toUpperCase());
     lines.push("────────────────");
 
     for (const period of PERIODS) {
       const slot = findSlot(day, period);
       const activity = (slot.activity || "").trim();
       const caregiver = (slot.caregiver || "—").trim();
-      const periodLabel = PERIOD_LABELS[period].padEnd(2, " ");
+      const periodLabel = PERIOD_LABELS[period];
 
       if (isRegularActivity(activity)) {
-        lines.push(`${periodLabel}  ${caregiver}`);
+        lines.push(`   ${periodLabel}  ${caregiver}`);
       } else {
-        lines.push(`${periodLabel} ★ *${activity}* · ${caregiver}`);
+        lines.push(`★  ${periodLabel}  ${activity} · ${caregiver}`);
       }
     }
 
     lines.push("");
   }
 
-  lines.push("_Generated from Lewis Schedule_");
+  lines.push("—");
+  lines.push("Generated from Lewis Schedule");
   return lines.join("\n");
 }
 
