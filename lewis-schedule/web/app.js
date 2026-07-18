@@ -431,29 +431,30 @@ function formatExportWeekTitle() {
 }
 
 function buildExportText() {
-  const lines = [`📅 *Lewis — Week of ${formatExportWeekTitle()}*`, ""];
+  const lines = [`📅 Lewis — Week of ${formatExportWeekTitle()}`, ""];
 
   for (const day of DAYS) {
-    lines.push(`*${DAY_NAMES[day]}*`);
+    lines.push(DAY_NAMES[day].toUpperCase());
     lines.push("────────────────");
 
     for (const period of PERIODS) {
       const slot = findSlot(day, period);
       const activity = (slot.activity || "").trim();
       const caregiver = (slot.caregiver || "—").trim();
-      const periodLabel = PERIOD_LABELS[period].padEnd(2, " ");
+      const periodLabel = PERIOD_LABELS[period];
 
       if (isRegularActivity(activity)) {
-        lines.push(`${periodLabel}  ${caregiver}`);
+        lines.push(`   ${periodLabel}  ${caregiver}`);
       } else {
-        lines.push(`${periodLabel} ★ *${activity}* · ${caregiver}`);
+        lines.push(`★  ${periodLabel}  ${activity} · ${caregiver}`);
       }
     }
 
     lines.push("");
   }
 
-  lines.push("_Generated from Lewis Schedule_");
+  lines.push("—");
+  lines.push("Generated from Lewis Schedule");
   return lines.join("\n");
 }
 

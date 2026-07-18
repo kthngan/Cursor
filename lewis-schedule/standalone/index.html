@@ -235,6 +235,10 @@ dialog::backdrop {
 
 #export-text {
   margin: 0 16px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  white-space: pre;
 }
 
 .toast {
@@ -277,7 +281,7 @@ dialog::backdrop {
 </head>
 <body>
   <p class="offline-banner" role="status">
-    Offline mode — screenshot import needs the server (see SETUP-IPHONE.md)
+    Lewis Schedule · Mon–Sat · tap Export for WhatsApp format
   </p>
 
   <div id="app">
@@ -690,29 +694,30 @@ function formatExportWeekTitle() {
 }
 
 function buildExportText() {
-  const lines = [`📅 *Lewis — Week of ${formatExportWeekTitle()}*`, ""];
+  const lines = [`📅 Lewis — Week of ${formatExportWeekTitle()}`, ""];
 
   for (const day of DAYS) {
-    lines.push(`*${DAY_NAMES[day]}*`);
+    lines.push(DAY_NAMES[day].toUpperCase());
     lines.push("────────────────");
 
     for (const period of PERIODS) {
       const slot = findSlot(day, period);
       const activity = (slot.activity || "").trim();
       const caregiver = (slot.caregiver || "—").trim();
-      const periodLabel = PERIOD_LABELS[period].padEnd(2, " ");
+      const periodLabel = PERIOD_LABELS[period];
 
       if (isRegularActivity(activity)) {
-        lines.push(`${periodLabel}  ${caregiver}`);
+        lines.push(`   ${periodLabel}  ${caregiver}`);
       } else {
-        lines.push(`${periodLabel} ★ *${activity}* · ${caregiver}`);
+        lines.push(`★  ${periodLabel}  ${activity} · ${caregiver}`);
       }
     }
 
     lines.push("");
   }
 
-  lines.push("_Generated from Lewis Schedule_");
+  lines.push("—");
+  lines.push("Generated from Lewis Schedule");
   return lines.join("\n");
 }
 

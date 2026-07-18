@@ -233,6 +233,13 @@ dialog::backdrop {
   margin: 0 16px 12px;
 }
 
+#export-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  white-space: pre;
+}
+
 .import-preview img {
   max-width: 100%;
   border-radius: 12px;
