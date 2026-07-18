@@ -14,6 +14,14 @@ const DAY_LABELS = {
   friday: "Fri",
   saturday: "Sat",
 };
+const DAY_NAMES = {
+  monday: "Monday",
+  tuesday: "Tuesday",
+  wednesday: "Wednesday",
+  thursday: "Thursday",
+  friday: "Friday",
+  saturday: "Saturday",
+};
 const PERIODS = ["morning", "afternoon"];
 const PERIOD_LABELS = { morning: "AM", afternoon: "PM" };
 const CAREGIVER_PRESETS = ["Por por", "Mama"];
@@ -407,18 +415,45 @@ function bindDragAndTap(row) {
   });
 }
 
+function isRegularActivity(activity) {
+  const value = (activity || "").trim().toLowerCase();
+  return !value || value === "regular day" || value === "free";
+}
+
+function formatExportWeekTitle() {
+  const start = new Date(state.week_start + "T12:00:00");
+  const fmt = new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  return fmt.format(start);
+}
+
 function buildExportText() {
-  const lines = [`📅 Lewis — Week of ${state.week_start}`, ""];
+  const lines = [`📅 *Lewis — Week of ${formatExportWeekTitle()}*`, ""];
+
   for (const day of DAYS) {
+    lines.push(`*${DAY_NAMES[day]}*`);
+    lines.push("────────────────");
+
     for (const period of PERIODS) {
       const slot = findSlot(day, period);
-      const label = `${DAY_LABELS[day]} ${PERIOD_LABELS[period]}`;
-      const activity = slot.activity || "—";
-      const caregiver = slot.caregiver || "—";
-      lines.push(`${label}: ${activity} — ${caregiver}`);
+      const activity = (slot.activity || "").trim();
+      const caregiver = (slot.caregiver || "—").trim();
+      const periodLabel = PERIOD_LABELS[period].padEnd(2, " ");
+
+      if (isRegularActivity(activity)) {
+        lines.push(`${periodLabel}  ${caregiver}`);
+      } else {
+        lines.push(`${periodLabel} ★ *${activity}* · ${caregiver}`);
+      }
     }
+
+    lines.push("");
   }
-  lines.push("", "Generated from Lewis Schedule");
+
+  lines.push("_Generated from Lewis Schedule_");
   return lines.join("\n");
 }
 
