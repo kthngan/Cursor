@@ -1,0 +1,98 @@
+{
+  "name": "Confirmed week of 14 Jul 2026",
+  "week_start": "2026-07-14",
+  "caregivers": ["Por por", "Mah mah"],
+  "activities": [
+    "Nancy class 9am",
+    "Little Habs Interview class 8:45am",
+    "Judy class",
+    "Regular day",
+    "Free"
+  ],
+  "slots": [
+    {
+      "day": "monday",
+      "period": "morning",
+      "activity": "Nancy class 9am",
+      "caregiver": "Por por"
+    },
+    {
+      "day": "monday",
+      "period": "afternoon",
+      "activity": "Regular day",
+      "caregiver": "Por por"
+    },
+    {
+      "day": "tuesday",
+      "period": "morning",
+      "activity": "Little Habs Interview class 8:45am",
+      "caregiver": "Mah mah"
+    },
+    {
+      "day": "tuesday",
+      "period": "afternoon",
+      "activity": "Regular day",
+      "caregiver": "Mah mah"
+    },
+    {
+      "day": "wednesday",
+      "period": "morning",
+      "activity": "Regular day",
+      "caregiver": "Por por"
+    },
+    {
+      "day": "wednesday",
+      "period": "afternoon",
+      "activity": "Regular day",
+      "caregiver": "Por por"
+    },
+    {
+      "day": "thursday",
+      "period": "morning",
+      "activity": "Nancy class 9am",
+      "caregiver": "Por por"
+    },
+    {
+      "day": "thursday",
+      "period": "afternoon",
+      "activity": "Regular day",
+      "caregiver": "Mah mah"
+    },
+    {
+      "day": "friday",
+      "period": "morning",
+      "activity": "Judy class",
+      "caregiver": "Por por"
+    },
+    {
+      "day": "friday",
+      "period": "afternoon",
+      "activity": "Mah mah (PM); Por por overnight",
+      "caregiver": "Mah mah"
+    },
+    {
+      "day": "saturday",
+      "period": "morning",
+      "activity": "Regular day",
+      "caregiver": "Por por"
+    },
+    {
+      "day": "saturday",
+      "period": "afternoon",
+      "activity": "Regular day",
+      "caregiver": "Por por"
+    },
+    {
+      "day": "sunday",
+      "period": "morning",
+      "activity": "Regular day",
+      "caregiver": "Por por"
+    },
+    {
+      "day": "sunday",
+      "period": "afternoon",
+      "activity": "Regular day",
+      "caregiver": "Por por"
+    }
+  ]
+}

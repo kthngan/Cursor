@@ -24,6 +24,7 @@ backtest_output/
 *.gif
 *.webp
 *.html
+!lewis-schedule/web/*.html
 *.pdf
 !SportsAPI/docs/
 !SportsAPI/docs/*.pdf
@@ -44,3 +45,5 @@ deltaReportOld/bundle_string_matches.txt
 !*.schema.json
 !package.json
 !tsconfig.json
+!lewis-schedule/templates/*.json
+!lewis-schedule/web/manifest.json
