@@ -3,14 +3,13 @@
 #   irm https://raw.githubusercontent.com/kthngan/Cursor/main/lewis-schedule/clone-to-pc.ps1 | iex
 # Or save this file and: powershell -ExecutionPolicy Bypass -File clone-to-pc.ps1
 
-$ErrorActionPreference = "Stop"
-$RepoUrl = "https://github.com/kthngan/Cursor.git"
-$DefaultTarget = Join-Path $env:USERPROFILE "Documents\Cursor"
-
 param(
-    [string]$Target = $DefaultTarget,
+    [string]$Target = (Join-Path $env:USERPROFILE "Documents\Cursor"),
     [switch]$SkipStart
 )
+
+$ErrorActionPreference = "Stop"
+$RepoUrl = "https://github.com/kthngan/Cursor.git"
 
 function Write-Step($msg) {
     Write-Host ""
