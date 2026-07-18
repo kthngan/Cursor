@@ -454,7 +454,7 @@ function buildExportText() {
   }
 
   lines.push("—");
-  lines.push("Generated from Lewis Schedule");
+  lines.push("Generated from Ngan's AI");
   return lines.join("\n");
 }
 
