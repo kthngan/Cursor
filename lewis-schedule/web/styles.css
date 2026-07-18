@@ -171,6 +171,24 @@ button.primary {
   outline: 2px solid var(--accent);
 }
 
+.caregiver-control {
+  display: grid;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.caregiver-select,
+.caregiver-other {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0b0d11;
+  color: var(--text);
+  padding: 8px;
+  min-height: 36px;
+  font: inherit;
+}
+
 dialog {
   width: min(560px, calc(100vw - 24px));
   border: 1px solid var(--border);

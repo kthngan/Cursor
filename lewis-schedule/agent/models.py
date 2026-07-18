@@ -12,7 +12,6 @@ Day = Literal[
     "thursday",
     "friday",
     "saturday",
-    "sunday",
 ]
 Period = Literal["morning", "afternoon"]
 

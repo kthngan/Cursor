@@ -1,7 +1,7 @@
 {
   "name": "Confirmed week of 14 Jul 2026",
   "week_start": "2026-07-14",
-  "caregivers": ["Por por", "Mah mah"],
+  "caregivers": ["Por por", "Mama"],
   "activities": [
     "Nancy class 9am",
     "Little Habs Interview class 8:45am",
@@ -26,13 +26,13 @@
       "day": "tuesday",
       "period": "morning",
       "activity": "Little Habs Interview class 8:45am",
-      "caregiver": "Mah mah"
+      "caregiver": "Mama"
     },
     {
       "day": "tuesday",
       "period": "afternoon",
       "activity": "Regular day",
-      "caregiver": "Mah mah"
+      "caregiver": "Mama"
     },
     {
       "day": "wednesday",
@@ -56,7 +56,7 @@
       "day": "thursday",
       "period": "afternoon",
       "activity": "Regular day",
-      "caregiver": "Mah mah"
+      "caregiver": "Mama"
     },
     {
       "day": "friday",
@@ -67,8 +67,8 @@
     {
       "day": "friday",
       "period": "afternoon",
-      "activity": "Mah mah (PM); Por por overnight",
-      "caregiver": "Mah mah"
+      "activity": "Mama (PM); Por por overnight",
+      "caregiver": "Mama"
     },
     {
       "day": "saturday",
@@ -78,18 +78,6 @@
     },
     {
       "day": "saturday",
-      "period": "afternoon",
-      "activity": "Regular day",
-      "caregiver": "Por por"
-    },
-    {
-      "day": "sunday",
-      "period": "morning",
-      "activity": "Regular day",
-      "caregiver": "Por por"
-    },
-    {
-      "day": "sunday",
       "period": "afternoon",
       "activity": "Regular day",
       "caregiver": "Por por"
