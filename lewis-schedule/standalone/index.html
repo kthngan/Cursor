@@ -282,9 +282,7 @@ dialog::backdrop {
   </style>
 </head>
 <body>
-  <p class="offline-banner" role="status">
-    Lewis Schedule · Build v4 · Mon–Sat · Export shows ★ for classes
-  </p>
+  <p class="offline-banner" id="build-banner" role="status"></p>
 
   <div id="app">
     <header class="topbar">
@@ -383,7 +381,7 @@ const CAREGIVER_PRESETS = ["Por por", "Mama"];
 const STORAGE_KEY = "lewisScheduleState";
 const TEMPLATE_VERSION_KEY = "lewisScheduleTemplateVersion";
 const CURRENT_TEMPLATE_VERSION = "2026-07-14-v2-no-sunday";
-const APP_BUILD = "2026-07-18-v5";
+const APP_BUILD = "v6";
 
 const weekLabel = document.getElementById("week-label");
 const scheduleGrid = document.getElementById("schedule-grid");

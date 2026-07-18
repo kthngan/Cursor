@@ -1,41 +1,22 @@
 # Lewis Schedule — open on iPhone
 
-## Use this link (Build v4)
+## Latest link (Build v6)
 
-**https://kthngan.github.io/Cursor/schedule.html**
+**https://kthngan.github.io/Cursor/v6.html**
 
-If you saved an old Home Screen icon, delete it and add this link instead.
+The banner is set from code — look for **Build v6** at the top.
 
-You should see a yellow banner: **“Build v4 · Export shows ★ for classes”**
-
----
-
-## Export preview should look like
-
-```
-📅 Lewis — Week of 14 Jul 2026
-
-MONDAY
-────────────────
-★  AM  Nancy class 9am · Por por
-   PM  Por por
-```
-
-If you still see `Mon AM: ...` on one line, you have an **old cached copy**.
+Export footer: **Generated from Ngan's AI**
 
 ---
 
-## Fix cache on iPhone
+## If you see an old version
 
-1. Delete old **Home Screen** icon
-2. Safari **Private** tab → open **schedule.html** link above
-3. Confirm banner says **Build v4**
-4. **Share → Add to Home Screen** again
+1. Delete old Home Screen icon
+2. Private Safari tab → **v6.html** link above
+3. Confirm banner says **Build v6**
+4. Add to Home Screen again
 
 ---
 
-## Root URL
-
-https://kthngan.github.io/Cursor/ redirects to `schedule.html`.
-
-Backup: https://raw.githack.com/kthngan/Cursor/main/docs/schedule.html
+Also works: https://kthngan.github.io/Cursor/schedule.html (may cache — prefer **v6.html**)
