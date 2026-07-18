@@ -1,43 +1,28 @@
 # Lewis Schedule — live on your iPhone
 
-## Step 1 — Enable GitHub Pages (one time, ~30 seconds)
+## Pages not enabled yet?
 
-On your iPhone or any browser:
+If **https://kthngan.github.io/Cursor/** says *“There isn’t a GitHub Pages site here”*, follow:
 
-1. Open **https://github.com/kthngan/Cursor/settings/pages**
-2. Under **Build and deployment** → **Source**, choose **Deploy from a branch**
-3. **Branch:** `main` → folder **`/docs`** → **Save**
+**[lewis-schedule/ENABLE-PAGES.md](../lewis-schedule/ENABLE-PAGES.md)**
 
-Wait 1–2 minutes for the first deploy.
+Quick version (on iPhone Safari):
 
-## Step 2 — Open on iPhone
-
-**https://kthngan.github.io/Cursor/**
-
-Safari → **Share → Add to Home Screen**.
-
-Access token: **none** (offline app, no login).
+1. **https://github.com/kthngan/Cursor/settings/pages**
+2. Source → **Deploy from a branch** → `main` → **`/docs`** → **Save**
+3. Wait 2 minutes → open **https://kthngan.github.io/Cursor/**
 
 ---
 
-## If Pages is not enabled yet
+## Temporary link (no setup)
 
-Temporary mirror (tap **Open the page** on the warning screen):
-
-**https://raw.githack.com/kthngan/Cursor/main/docs/index.html**
+**https://raw.githack.com/kthngan/Cursor/main/docs/index.html**  
+(tap **Open the page** on the warning screen)
 
 ---
 
 ## Features
 
-- Mon–Sat schedule, Por por / Mama dropdown + Other
+- Mon–Sat schedule · Por por / Mama dropdown + Other
 - Edit, swap, export to WhatsApp
-- Screenshot import: needs PC server later (`SETUP-IPHONE.md`)
-
-## Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| 404 on github.io | Complete Step 1 above |
-| Old schedule | Private tab, or **Reload this week** in app |
-| htmlpreview link blank | Do not use htmlpreview — use github.io URL above |
+- Screenshot import: needs PC server (`SETUP-IPHONE.md`)

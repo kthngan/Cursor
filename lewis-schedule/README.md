@@ -15,16 +15,13 @@ lewis-schedule/
 
 ## iPhone test run
 
-See **[SETUP-IPHONE.md](./SETUP-IPHONE.md)** for step-by-step iPhone setup on your Windows PC.
+**GitHub Pages must be enabled once** — see **[ENABLE-PAGES.md](./ENABLE-PAGES.md)** if you see *“There isn’t a GitHub Pages site here”*.
 
-Quick start:
+After enable: **https://kthngan.github.io/Cursor/**
 
-```powershell
-cd lewis-schedule
-.\start.ps1
-```
+Temporary (no setup): **https://raw.githack.com/kthngan/Cursor/main/docs/index.html**
 
-Then on iPhone Safari: `http://<your-pc-ip>:8790` with token **`lewis-2026-test`**.
+See also **[OFFLINE-IPHONE.md](./OFFLINE-IPHONE.md)** and **[SETUP-IPHONE.md](./SETUP-IPHONE.md)**.
 
 ## Quick start
 

@@ -1,9 +1,10 @@
-name: Deploy Lewis Schedule (standalone)
+name: Deploy Lewis Schedule to GitHub Pages
 
 on:
   push:
-    branches: [main, cursor/lewis-schedule-web-d552]
+    branches: [main]
     paths:
+      - "docs/**"
       - "lewis-schedule/standalone/**"
       - ".github/workflows/lewis-schedule-pages.yml"
   workflow_dispatch:
@@ -28,6 +29,6 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: lewis-schedule/standalone
+          path: docs
       - id: deployment
         uses: actions/deploy-pages@v4
