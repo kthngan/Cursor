@@ -20,6 +20,8 @@ const PERIODS = ["morning", "afternoon"];
 const PERIOD_LABELS = { morning: "AM", afternoon: "PM" };
 const STORAGE_KEY = "lewisScheduleState";
 const TOKEN_KEY = "lewisScheduleToken";
+const TEMPLATE_VERSION_KEY = "lewisScheduleTemplateVersion";
+const CURRENT_TEMPLATE_VERSION = "2026-07-14-confirmed";
 
 const gate = document.getElementById("gate");
 const app = document.getElementById("app");
@@ -147,6 +149,7 @@ async function connect() {
     await apiFetch("/api/health");
     localStorage.setItem(TOKEN_KEY, token);
     showApp();
+    await ensureTemplateLoaded();
   } catch (_) {
     alert("Invalid token or server unavailable.");
   }
@@ -190,6 +193,9 @@ function swapSlots(sourceDay, sourcePeriod, targetDay, targetPeriod) {
 }
 
 function applyTemplate(template) {
+  if (template.week_start) {
+    state.week_start = template.week_start;
+  }
   state.caregivers = template.caregivers || [];
   state.activities = template.activities || [];
   state.slots = template.slots.map((slot) => ({
@@ -200,6 +206,27 @@ function applyTemplate(template) {
   }));
   saveState();
   render();
+}
+
+async function loadConfirmedTemplate(showNotice = true) {
+  const template = await apiFetch("/api/template");
+  applyTemplate(template);
+  localStorage.setItem(TEMPLATE_VERSION_KEY, CURRENT_TEMPLATE_VERSION);
+  if (showNotice) {
+    showToast("This week's schedule loaded");
+  }
+}
+
+async function ensureTemplateLoaded() {
+  if (localStorage.getItem(TEMPLATE_VERSION_KEY) === CURRENT_TEMPLATE_VERSION) {
+    return;
+  }
+  try {
+    await loadConfirmedTemplate(false);
+    showToast("Confirmed schedule for this week loaded");
+  } catch (err) {
+    console.warn("Could not auto-load template", err);
+  }
 }
 
 function applyPatch(patch) {
@@ -509,13 +536,11 @@ document.getElementById("next-week-btn").addEventListener("click", () => {
 });
 
 document.getElementById("reset-template-btn").addEventListener("click", async () => {
-  if (!confirm("Load the default template? This replaces the current week.")) {
+  if (!confirm("Reload the confirmed schedule for this week? This replaces your current edits.")) {
     return;
   }
   try {
-    const template = await apiFetch("/api/template");
-    applyTemplate(template);
-    showToast("Template loaded");
+    await loadConfirmedTemplate();
   } catch (err) {
     alert(String(err.message || err));
   }
@@ -582,7 +607,10 @@ shareExportBtn.addEventListener("click", async () => {
 
 if (token) {
   apiFetch("/api/health")
-    .then(() => showApp())
+    .then(async () => {
+      showApp();
+      await ensureTemplateLoaded();
+    })
     .catch(() => localStorage.removeItem(TOKEN_KEY));
 }
 

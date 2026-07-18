@@ -46,3 +46,4 @@ deltaReportOld/bundle_string_matches.txt
 !package.json
 !tsconfig.json
 !lewis-schedule/templates/*.json
+!lewis-schedule/web/manifest.json

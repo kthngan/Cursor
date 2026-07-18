@@ -25,6 +25,7 @@ WORKSPACE = Path(os.environ.get("WORKSPACE_DIR") or DEFAULT_WORKSPACE).resolve()
 API_KEY = os.environ.get("CURSOR_API_KEY", "")
 ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN", "")
 PORT = int(os.environ.get("PORT", "8790"))
+HOST = os.environ.get("HOST", "0.0.0.0")
 
 
 def verify_token(request: Request) -> None:
@@ -135,4 +136,4 @@ app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("server:app", host="127.0.0.1", port=PORT, reload=False)
+    uvicorn.run("server:app", host=HOST, port=PORT, reload=False)

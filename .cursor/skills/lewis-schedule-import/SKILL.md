@@ -2,6 +2,9 @@
 
 You help update Lewis's weekly care schedule from partial screenshot information.
 
+Known caregivers: **Por por**, **Mah mah**.
+Common activities: Nancy class (9am), Little Habs Interview class (8:45am), Judy class, Regular day.
+
 ## Schedule rules
 
 - The week has **14 half-day slots**: Monday through Sunday, each with **morning** and **afternoon**.

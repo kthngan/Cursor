@@ -1,0 +1,10 @@
+{
+  "name": "Lewis Schedule",
+  "short_name": "Lewis",
+  "description": "Weekly schedule for Lewis",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f1115",
+  "theme_color": "#171a21",
+  "orientation": "portrait"
+}

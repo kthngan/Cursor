@@ -13,6 +13,19 @@ lewis-schedule/
 .cursor/skills/lewis-schedule-import/   Composer skill (repo root)
 ```
 
+## iPhone test run
+
+See **[SETUP-IPHONE.md](./SETUP-IPHONE.md)** for step-by-step iPhone setup on your Windows PC.
+
+Quick start:
+
+```powershell
+cd lewis-schedule
+.\start.ps1
+```
+
+Then on iPhone Safari: `http://<your-pc-ip>:8790` with token **`lewis-2026-test`**.
+
 ## Quick start
 
 1. Copy env file:
