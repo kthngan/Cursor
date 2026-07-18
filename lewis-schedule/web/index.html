@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Lewis Schedule" />
+  <title>Lewis Schedule</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="gate" class="panel gate">
+    <h1>Lewis Schedule</h1>
+    <p class="muted">Enter your access token to connect.</p>
+    <input id="token-input" type="password" placeholder="Access token" autocomplete="current-password" />
+    <button id="connect-btn" type="button">Connect</button>
+  </div>
+
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div>
+        <h1>Lewis Schedule</h1>
+        <p id="week-label" class="muted"></p>
+      </div>
+      <div class="topbar-actions">
+        <button id="prev-week-btn" type="button" class="ghost">Prev</button>
+        <button id="next-week-btn" type="button" class="ghost">Next</button>
+      </div>
+    </header>
+
+    <section class="toolbar panel">
+      <button id="reset-template-btn" type="button">Load template</button>
+      <button id="import-btn" type="button">Import screenshot</button>
+      <button id="export-btn" type="button">Export</button>
+    </section>
+
+    <p id="drag-hint" class="muted hint">Drag a row to swap slots. On phone: tap a row, then tap another to swap.</p>
+
+    <section id="schedule-grid" class="schedule-grid" aria-label="Weekly schedule"></section>
+
+    <input id="screenshot-input" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+  </div>
+
+  <dialog id="import-dialog">
+    <form method="dialog" id="import-form">
+      <header class="dialog-header">
+        <h2>Import from screenshot</h2>
+        <button type="button" id="import-close-btn" class="ghost" aria-label="Close">Close</button>
+      </header>
+      <div id="import-preview" class="import-preview hidden">
+        <img id="import-image" alt="Uploaded screenshot preview" />
+      </div>
+      <p id="import-status" class="muted">Composer will read partial updates and ask questions if needed.</p>
+      <div id="import-message" class="import-message"></div>
+      <div id="import-questions" class="import-questions"></div>
+      <div id="import-proposal" class="import-proposal hidden"></div>
+      <footer class="dialog-footer">
+        <button type="button" id="import-apply-btn" class="primary hidden">Apply changes</button>
+        <button type="button" id="import-cancel-btn">Cancel</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="export-dialog">
+    <form method="dialog">
+      <header class="dialog-header">
+        <h2>Export schedule</h2>
+        <button type="button" id="export-close-btn" class="ghost" aria-label="Close">Close</button>
+      </header>
+      <textarea id="export-text" readonly rows="14"></textarea>
+      <footer class="dialog-footer">
+        <button type="button" id="copy-export-btn" class="primary">Copy</button>
+        <button type="button" id="share-export-btn">Share</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

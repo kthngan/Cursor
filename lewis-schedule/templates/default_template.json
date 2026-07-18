@@ -1,0 +1,21 @@
+{
+  "name": "Default week",
+  "caregivers": ["Mum", "Dad", "Grandma"],
+  "activities": ["School", "Pickup", "Swimming", "Nursery", "Free"],
+  "slots": [
+    {"day": "monday", "period": "morning", "activity": "School", "caregiver": "Mum"},
+    {"day": "monday", "period": "afternoon", "activity": "Pickup", "caregiver": "Dad"},
+    {"day": "tuesday", "period": "morning", "activity": "School", "caregiver": "Mum"},
+    {"day": "tuesday", "period": "afternoon", "activity": "Swimming", "caregiver": "Dad"},
+    {"day": "wednesday", "period": "morning", "activity": "School", "caregiver": "Mum"},
+    {"day": "wednesday", "period": "afternoon", "activity": "Pickup", "caregiver": "Grandma"},
+    {"day": "thursday", "period": "morning", "activity": "School", "caregiver": "Mum"},
+    {"day": "thursday", "period": "afternoon", "activity": "Pickup", "caregiver": "Dad"},
+    {"day": "friday", "period": "morning", "activity": "School", "caregiver": "Mum"},
+    {"day": "friday", "period": "afternoon", "activity": "Free", "caregiver": "Dad"},
+    {"day": "saturday", "period": "morning", "activity": "Swimming", "caregiver": "Dad"},
+    {"day": "saturday", "period": "afternoon", "activity": "Free", "caregiver": "Mum"},
+    {"day": "sunday", "period": "morning", "activity": "Free", "caregiver": "Mum"},
+    {"day": "sunday", "period": "afternoon", "activity": "Free", "caregiver": "Dad"}
+  ]
+}

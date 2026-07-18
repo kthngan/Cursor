@@ -1,0 +1,5 @@
+cursor-sdk>=0.1.7
+fastapi>=0.136.0
+uvicorn>=0.49.0
+python-dotenv>=1.0.0
+pydantic>=2.0.0

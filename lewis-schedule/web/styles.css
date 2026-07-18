@@ -1,0 +1,292 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0f1115;
+  --panel: #171a21;
+  --text: #e8eaed;
+  --muted: #9aa0a6;
+  --accent: #7cb8ff;
+  --accent-text: #081018;
+  --border: #2a2f3a;
+  --today: #2a3d2a;
+  --danger: #ff8a80;
+  --success: #9be7a3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100dvh;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+
+.gate {
+  max-width: 420px;
+  margin: 12vh auto;
+  padding: 24px;
+  display: grid;
+  gap: 12px;
+}
+
+.gate h1,
+.topbar h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+input,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+textarea {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #0b0d11;
+  color: var(--text);
+  padding: 12px;
+}
+
+button {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px;
+  padding: 12px;
+}
+
+.hint {
+  margin: 0 16px 8px;
+  font-size: 0.9rem;
+}
+
+.schedule-grid {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 24px;
+}
+
+.slot-row {
+  display: grid;
+  grid-template-columns: 72px 56px 1fr 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  touch-action: manipulation;
+}
+
+.slot-row.today {
+  background: var(--today);
+}
+
+.slot-row.dragging {
+  opacity: 0.55;
+}
+
+.slot-row.selected {
+  outline: 2px solid var(--accent);
+}
+
+.slot-row[draggable="true"] {
+  cursor: grab;
+}
+
+.day-label,
+.period-label {
+  font-size: 0.85rem;
+}
+
+.period-label {
+  color: var(--muted);
+}
+
+.chip {
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px dashed var(--border);
+  background: #10141b;
+}
+
+.chip:focus {
+  outline: 2px solid var(--accent);
+}
+
+dialog {
+  width: min(560px, calc(100vw - 24px));
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 0;
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.dialog-header,
+.dialog-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+}
+
+.dialog-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.dialog-footer {
+  border-top: 1px solid var(--border);
+}
+
+#import-form,
+#export-dialog form {
+  margin: 0;
+}
+
+#import-message,
+#import-questions,
+#import-proposal,
+#import-status,
+#import-preview,
+#export-text {
+  margin: 0 16px 12px;
+}
+
+.import-preview img {
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.import-message {
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.import-questions {
+  display: grid;
+  gap: 12px;
+}
+
+.question-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.question-card p {
+  margin: 0;
+}
+
+.choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.import-proposal ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  background: #1f2937;
+  border: 1px solid var(--border);
+  padding: 10px 16px;
+  border-radius: 999px;
+  z-index: 20;
+}
+
+@media (max-width: 640px) {
+  .slot-row {
+    grid-template-columns: 64px 48px 1fr;
+    grid-template-areas:
+      "day period period"
+      "activity activity caregiver";
+  }
+
+  .day-label {
+    grid-area: day;
+  }
+
+  .period-label {
+    grid-area: period;
+  }
+
+  .chip.activity {
+    grid-area: activity;
+  }
+
+  .chip.caregiver {
+    grid-area: caregiver;
+  }
+}
