@@ -27,8 +27,6 @@ const PERIOD_LABELS = { morning: "AM", afternoon: "PM" };
 const CAREGIVER_PRESETS = ["Por por", "Mama"];
 const STORAGE_KEY = "lewisScheduleState";
 const TOKEN_KEY = "lewisScheduleToken";
-const TEMPLATE_VERSION_KEY = "lewisScheduleTemplateVersion";
-const CURRENT_TEMPLATE_VERSION = "2026-07-14-v2-no-sunday";
 
 const gate = document.getElementById("gate");
 const app = document.getElementById("app");
@@ -53,25 +51,26 @@ const exportCloseBtn = document.getElementById("export-close-btn");
 const copyExportBtn = document.getElementById("copy-export-btn");
 const shareExportBtn = document.getElementById("share-export-btn");
 const toast = document.getElementById("toast");
+const chatMessages = document.getElementById("chat-messages");
+const chatForm = document.getElementById("chat-form");
+const chatInput = document.getElementById("chat-input");
+const chatSendBtn = document.getElementById("chat-send-btn");
+const chatClearBtn = document.getElementById("chat-clear-btn");
+const chatPatch = document.getElementById("chat-patch");
 
 let token = localStorage.getItem(TOKEN_KEY) || "";
-let state = loadState();
+let state = defaultState();
 let selectedSlotKey = null;
 let importThreadId = null;
 let pendingPatch = null;
 let pendingImage = null;
+let chatThreadId = null;
+let chatPendingPatch = null;
+let chatBusy = false;
 
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      return JSON.parse(raw);
-    }
-  } catch (_) {
-    /* use default */
-  }
+function defaultState(weekStart = mondayIso(new Date())) {
   return {
-    week_start: mondayIso(new Date()),
+    week_start: weekStart,
     caregivers: [],
     activities: [],
     slots: emptySlots(),
@@ -100,7 +99,7 @@ function emptySlots() {
   const slots = [];
   for (const day of DAYS) {
     for (const period of PERIODS) {
-      slots.push({ day, period, activity: "", caregiver: "" });
+      slots.push({ day, period, activity: "", caregiver: "", time: "" });
     }
   }
   return slots;
@@ -156,7 +155,8 @@ async function connect() {
     await apiFetch("/api/health");
     localStorage.setItem(TOKEN_KEY, token);
     showApp();
-    await ensureTemplateLoaded();
+    await loadCurrentWeek();
+    resetChat();
   } catch (_) {
     alert("Invalid token or server unavailable.");
   }
@@ -180,6 +180,90 @@ function normalizeCaregiver(value) {
 
 function isPresetCaregiver(value) {
   return CAREGIVER_PRESETS.includes(normalizeCaregiver(value));
+}
+
+function createTimeControl(slot) {
+  const wrap = document.createElement("div");
+  wrap.className = "chip time-control";
+
+  const select = document.createElement("select");
+  select.className = "time-select";
+  select.setAttribute("aria-label", "Activity time");
+
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = "Time";
+  select.appendChild(blank);
+
+  const options =
+    slot.period === "morning"
+      ? [
+          "07:00",
+          "07:30",
+          "08:00",
+          "08:30",
+          "09:00",
+          "09:30",
+          "10:00",
+          "10:30",
+          "11:00",
+          "11:30",
+        ]
+      : [
+          "12:00",
+          "12:30",
+          "13:00",
+          "13:30",
+          "14:00",
+          "14:30",
+          "15:00",
+          "15:30",
+          "16:00",
+          "16:30",
+          "17:00",
+          "17:30",
+          "18:00",
+        ];
+
+  for (const value of options) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = formatTimeLabel(value);
+    select.appendChild(option);
+  }
+
+  if (slot.time && !options.includes(slot.time)) {
+    const custom = document.createElement("option");
+    custom.value = slot.time;
+    custom.textContent = formatTimeLabel(slot.time);
+    select.appendChild(custom);
+  }
+
+  select.value = slot.time || "";
+  select.addEventListener("change", () => {
+    slot.time = select.value;
+    saveState();
+  });
+  select.addEventListener("click", (event) => event.stopPropagation());
+  wrap.addEventListener("click", (event) => event.stopPropagation());
+  wrap.appendChild(select);
+  return wrap;
+}
+
+function formatTimeLabel(value) {
+  const [hourText, minuteText] = String(value).split(":");
+  const hour = Number(hourText);
+  if (Number.isNaN(hour)) {
+    return value;
+  }
+  const suffix = hour >= 12 ? "pm" : "am";
+  const hour12 = hour % 12 || 12;
+  return `${hour12}:${minuteText || "00"}${suffix}`;
+}
+
+function hasActivity(value) {
+  const trimmed = (value || "").trim();
+  return Boolean(trimmed) && trimmed.toLowerCase() !== "activity";
 }
 
 function createCaregiverControl(slot) {
@@ -254,49 +338,109 @@ function swapSlots(sourceDay, sourcePeriod, targetDay, targetPeriod) {
   }
   const tempActivity = source.activity;
   const tempCaregiver = source.caregiver;
+  const tempTime = source.time;
   source.activity = target.activity;
   source.caregiver = target.caregiver;
+  source.time = target.time || "";
   target.activity = tempActivity;
   target.caregiver = tempCaregiver;
+  target.time = tempTime || "";
+  saveState();
+  render();
+}
+
+async function fetchScheduleWeek(weekStart) {
+  const url = `/api/schedule?week_start=${encodeURIComponent(weekStart)}`;
+  const fullUrl = token
+    ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
+    : url;
+  const res = await fetch(fullUrl, { headers: authHeaders() });
+  if (res.status === 404) {
+    return null;
+  }
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(detail || `Request failed (${res.status})`);
+  }
+  return res.json();
+}
+
+async function loadWeekFromBackend(weekStart, showNotice = false) {
+  state.week_start = weekStart;
+  try {
+    const saved = await fetchScheduleWeek(weekStart);
+    if (saved) {
+      applySchedule(saved, weekStart);
+      if (showNotice) {
+        showToast("Schedule loaded");
+      }
+      return;
+    }
+    state.caregivers = [];
+    state.activities = [];
+    state.slots = emptySlots();
+    state.week_start = weekStart;
+    saveState();
+    render();
+  } catch (err) {
+    console.warn("Could not load schedule from backend", err);
+    state.caregivers = [];
+    state.activities = [];
+    state.slots = emptySlots();
+    state.week_start = weekStart;
+    saveState();
+    render();
+  }
+}
+
+async function saveScheduleToBackend() {
+  const payload = {
+    week_start: state.week_start,
+    caregivers: state.caregivers,
+    activities: state.activities,
+    slots: state.slots,
+  };
+  await apiFetch("/api/schedule", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  saveState();
+  showToast("Schedule saved");
+}
+
+function applySchedule(schedule, weekStart) {
+  state.week_start = weekStart;
+  state.caregivers = schedule.caregivers || [];
+  state.activities = schedule.activities || [];
+  state.slots = (schedule.slots || emptySlots()).map((slot) => ({
+    day: slot.day,
+    period: slot.period,
+    activity: slot.activity || "",
+    caregiver: slot.caregiver || "",
+    time: slot.time || "",
+  }));
+  if (!state.slots.length) {
+    state.slots = emptySlots();
+  }
   saveState();
   render();
 }
 
 function applyTemplate(template) {
-  if (template.week_start) {
-    state.week_start = template.week_start;
-  }
-  state.caregivers = template.caregivers || [];
-  state.activities = template.activities || [];
-  state.slots = template.slots.map((slot) => ({
-    day: slot.day,
-    period: slot.period,
-    activity: slot.activity || "",
-    caregiver: slot.caregiver || "",
-  }));
-  saveState();
-  render();
+  const weekStart = state.week_start;
+  applySchedule(template, weekStart);
 }
 
 async function loadConfirmedTemplate(showNotice = true) {
   const template = await apiFetch("/api/template");
   applyTemplate(template);
-  localStorage.setItem(TEMPLATE_VERSION_KEY, CURRENT_TEMPLATE_VERSION);
   if (showNotice) {
     showToast("This week's schedule loaded");
   }
 }
 
-async function ensureTemplateLoaded() {
-  if (localStorage.getItem(TEMPLATE_VERSION_KEY) === CURRENT_TEMPLATE_VERSION) {
-    return;
-  }
-  try {
-    await loadConfirmedTemplate(false);
-    showToast("Confirmed schedule for this week loaded");
-  } catch (err) {
-    console.warn("Could not auto-load template", err);
-  }
+async function loadCurrentWeek() {
+  await loadWeekFromBackend(mondayIso(new Date()));
 }
 
 function applyPatch(patch) {
@@ -307,15 +451,21 @@ function applyPatch(patch) {
     }
     if (entry.activity !== null && entry.activity !== undefined) {
       slot.activity = entry.activity;
-      if (!state.activities.includes(entry.activity)) {
+      if (entry.activity && !state.activities.includes(entry.activity)) {
         state.activities.push(entry.activity);
+      }
+      if (!hasActivity(slot.activity)) {
+        slot.time = "";
       }
     }
     if (entry.caregiver !== null && entry.caregiver !== undefined) {
       slot.caregiver = entry.caregiver;
-      if (!state.caregivers.includes(entry.caregiver)) {
+      if (entry.caregiver && !state.caregivers.includes(entry.caregiver)) {
         state.caregivers.push(entry.caregiver);
       }
+    }
+    if (entry.time !== null && entry.time !== undefined) {
+      slot.time = hasActivity(slot.activity) ? entry.time : "";
     }
   }
   saveState();
@@ -349,17 +499,37 @@ function render() {
 
       const activityChip = document.createElement("div");
       activityChip.className = "chip activity";
-      activityChip.textContent = slot.activity || "Activity";
+      activityChip.textContent = hasActivity(slot.activity) ? slot.activity : "";
+      activityChip.dataset.placeholder = "Activity";
+      if (!hasActivity(slot.activity)) {
+        activityChip.classList.add("empty");
+      }
       activityChip.contentEditable = "true";
       activityChip.spellcheck = false;
+      activityChip.addEventListener("focus", () => {
+        activityChip.classList.remove("empty");
+      });
       activityChip.addEventListener("blur", () => {
-        slot.activity = activityChip.textContent.trim();
+        const value = activityChip.textContent.trim();
+        slot.activity = value;
+        if (!hasActivity(value)) {
+          slot.activity = "";
+          slot.time = "";
+          activityChip.textContent = "";
+          activityChip.classList.add("empty");
+        }
         saveState();
+        render();
       });
 
       const caregiverChip = createCaregiverControl(slot);
-
       row.append(dayLabel, periodLabel, activityChip, caregiverChip);
+
+      if (hasActivity(slot.activity)) {
+        row.classList.add("has-activity");
+        row.appendChild(createTimeControl(slot));
+      }
+
       bindDragAndTap(row);
       scheduleGrid.appendChild(row);
     }
@@ -441,12 +611,14 @@ function buildExportText() {
       const slot = findSlot(day, period);
       const activity = (slot.activity || "").trim();
       const caregiver = (slot.caregiver || "—").trim();
+      const time = (slot.time || "").trim();
       const periodLabel = PERIOD_LABELS[period];
+      const timeLabel = time ? ` ${formatTimeLabel(time)}` : "";
 
       if (isRegularActivity(activity)) {
         lines.push(`   ${periodLabel}  ${caregiver}`);
       } else {
-        lines.push(`★  ${periodLabel}  ${activity} · ${caregiver}`);
+        lines.push(`★  ${periodLabel}${timeLabel}  ${activity} · ${caregiver}`);
       }
     }
 
@@ -478,9 +650,14 @@ function renderAgentResponse(payload) {
   pendingPatch = null;
 
   if (agent.mode === "questions" && agent.questions?.length) {
-    for (const question of agent.questions) {
+    const answers = {};
+    const questions = agent.questions;
+
+    for (const question of questions) {
       const card = document.createElement("div");
       card.className = "question-card";
+      card.dataset.questionId = question.id || question.text;
+
       const text = document.createElement("p");
       text.textContent = question.text;
       card.appendChild(text);
@@ -490,12 +667,47 @@ function renderAgentResponse(payload) {
       for (const choice of question.choices || []) {
         const btn = document.createElement("button");
         btn.type = "button";
+        btn.className = "choice-btn";
         btn.textContent = choice;
-        btn.addEventListener("click", () => continueImport(choice));
+        btn.addEventListener("click", () => {
+          answers[question.id || question.text] = {
+            question: question.text,
+            answer: choice,
+          };
+          choices.querySelectorAll(".choice-btn").forEach((el) => {
+            el.classList.toggle("selected", el === btn);
+          });
+          updateSendEnabled();
+        });
         choices.appendChild(btn);
       }
       card.appendChild(choices);
       importQuestions.appendChild(card);
+    }
+
+    const sendRow = document.createElement("div");
+    sendRow.className = "question-send-row";
+    const sendBtn = document.createElement("button");
+    sendBtn.type = "button";
+    sendBtn.className = "primary";
+    sendBtn.textContent = "Send answers";
+    sendBtn.disabled = true;
+    sendBtn.addEventListener("click", () => {
+      if (Object.keys(answers).length < questions.length) {
+        return;
+      }
+      const lines = questions.map((question) => {
+        const key = question.id || question.text;
+        const picked = answers[key];
+        return `${question.text} → ${picked.answer}`;
+      });
+      continueImport(lines.join("\n"));
+    });
+    sendRow.appendChild(sendBtn);
+    importQuestions.appendChild(sendRow);
+
+    function updateSendEnabled() {
+      sendBtn.disabled = Object.keys(answers).length < questions.length;
     }
     return;
   }
@@ -506,7 +718,7 @@ function renderAgentResponse(payload) {
     const list = document.createElement("ul");
     for (const entry of agent.patch) {
       const slot = findSlot(entry.day, entry.period);
-      const before = `${slot.activity || "—"} / ${slot.caregiver || "—"}`;
+      const before = `${slot.activity || "—"} / ${slot.caregiver || "—"}${slot.time ? ` @ ${formatTimeLabel(slot.time)}` : ""}`;
       const afterActivity =
         entry.activity === null || entry.activity === undefined
           ? slot.activity || "—"
@@ -515,8 +727,12 @@ function renderAgentResponse(payload) {
         entry.caregiver === null || entry.caregiver === undefined
           ? slot.caregiver || "—"
           : entry.caregiver;
+      const afterTime =
+        entry.time === null || entry.time === undefined
+          ? slot.time || ""
+          : entry.time;
       const item = document.createElement("li");
-      item.textContent = `${DAY_LABELS[entry.day]} ${PERIOD_LABELS[entry.period]}: ${before} → ${afterActivity} / ${afterCaregiver}`;
+      item.textContent = `${DAY_LABELS[entry.day]} ${PERIOD_LABELS[entry.period]}: ${before} → ${afterActivity} / ${afterCaregiver}${afterTime ? ` @ ${formatTimeLabel(afterTime)}` : ""}`;
       list.appendChild(item);
     }
     importProposal.appendChild(list);
@@ -547,7 +763,7 @@ async function startImportFromFile(file) {
   importDialog.showModal();
   importPreview.classList.remove("hidden");
   importImage.src = URL.createObjectURL(file);
-  importStatus.textContent = "Sending screenshot to Composer…";
+  importStatus.textContent = "AI working its magic…";
 
   const base64 = await fileToBase64(file);
   pendingImage = { base64, mime_type: file.type || "image/jpeg" };
@@ -606,6 +822,109 @@ function fileToBase64(file) {
   });
 }
 
+function appendChatBubble(role, text) {
+  const bubble = document.createElement("div");
+  bubble.className = `chat-bubble ${role}`;
+  bubble.textContent = text;
+  chatMessages.appendChild(bubble);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function clearChatPatch() {
+  chatPendingPatch = null;
+  chatPatch.classList.add("hidden");
+  chatPatch.innerHTML = "";
+}
+
+function renderChatPatch(patch) {
+  clearChatPatch();
+  if (!patch?.length) {
+    return;
+  }
+  chatPendingPatch = patch;
+  chatPatch.classList.remove("hidden");
+  const title = document.createElement("strong");
+  title.textContent = "Proposed changes";
+  const list = document.createElement("ul");
+  for (const entry of patch) {
+    const slot = findSlot(entry.day, entry.period);
+    const before = `${slot?.activity || "—"} / ${slot?.caregiver || "—"}${slot?.time ? ` @ ${formatTimeLabel(slot.time)}` : ""}`;
+    const afterActivity =
+      entry.activity === null || entry.activity === undefined
+        ? slot?.activity || "—"
+        : entry.activity;
+    const afterCaregiver =
+      entry.caregiver === null || entry.caregiver === undefined
+        ? slot?.caregiver || "—"
+        : entry.caregiver;
+    const afterTime =
+      entry.time === null || entry.time === undefined
+        ? slot?.time || ""
+        : entry.time;
+    const item = document.createElement("li");
+    item.textContent = `${DAY_LABELS[entry.day]} ${PERIOD_LABELS[entry.period]}: ${before} → ${afterActivity} / ${afterCaregiver}${afterTime ? ` @ ${formatTimeLabel(afterTime)}` : ""}`;
+    list.appendChild(item);
+  }
+  const applyBtn = document.createElement("button");
+  applyBtn.type = "button";
+  applyBtn.className = "primary";
+  applyBtn.textContent = "Apply changes";
+  applyBtn.addEventListener("click", () => {
+    if (chatPendingPatch) {
+      applyPatch(chatPendingPatch);
+      showToast("Schedule updated");
+      clearChatPatch();
+      appendChatBubble("system", "Changes applied to the grid. Tap Save to keep them on the server.");
+    }
+  });
+  chatPatch.append(title, list, applyBtn);
+}
+
+async function sendChatMessage(message) {
+  if (chatBusy || !message.trim()) {
+    return;
+  }
+  chatBusy = true;
+  chatSendBtn.disabled = true;
+  chatInput.disabled = true;
+  appendChatBubble("user", message.trim());
+  appendChatBubble("system", "AI working its magic…");
+  const thinking = chatMessages.lastElementChild;
+
+  try {
+    const payload = await apiFetch("/schedule/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        message: message.trim(),
+        schedule: state,
+        thread_id: chatThreadId,
+      }),
+    });
+    chatThreadId = payload.thread_id;
+    thinking.remove();
+    appendChatBubble("assistant", payload.reply?.message || "No reply.");
+    renderChatPatch(payload.reply?.patch || []);
+  } catch (err) {
+    thinking.remove();
+    appendChatBubble("assistant", String(err.message || err));
+  } finally {
+    chatBusy = false;
+    chatSendBtn.disabled = false;
+    chatInput.disabled = false;
+    chatInput.focus();
+  }
+}
+
+async function resetChat() {
+  if (chatThreadId) {
+    apiFetch(`/schedule/import/${chatThreadId}`, { method: "DELETE" }).catch(() => {});
+  }
+  chatThreadId = null;
+  clearChatPatch();
+  chatMessages.innerHTML = "";
+  appendChatBubble("system", "Ask about this week, or request a schedule change.");
+}
+
 connectBtn.addEventListener("click", connect);
 tokenInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -613,16 +932,20 @@ tokenInput.addEventListener("keydown", (event) => {
   }
 });
 
-document.getElementById("prev-week-btn").addEventListener("click", () => {
-  state.week_start = addDays(state.week_start, -7);
-  saveState();
-  render();
+document.getElementById("prev-week-btn").addEventListener("click", async () => {
+  await loadWeekFromBackend(addDays(state.week_start, -7));
 });
 
-document.getElementById("next-week-btn").addEventListener("click", () => {
-  state.week_start = addDays(state.week_start, 7);
-  saveState();
-  render();
+document.getElementById("next-week-btn").addEventListener("click", async () => {
+  await loadWeekFromBackend(addDays(state.week_start, 7));
+});
+
+document.getElementById("save-btn").addEventListener("click", async () => {
+  try {
+    await saveScheduleToBackend();
+  } catch (err) {
+    alert(String(err.message || err));
+  }
 });
 
 document.getElementById("reset-template-btn").addEventListener("click", async () => {
@@ -695,13 +1018,27 @@ shareExportBtn.addEventListener("click", async () => {
   showToast("Copied — paste into WhatsApp");
 });
 
+chatForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const message = chatInput.value;
+  chatInput.value = "";
+  sendChatMessage(message);
+});
+
+chatClearBtn.addEventListener("click", () => {
+  resetChat();
+});
+
 if (token) {
   apiFetch("/api/health")
     .then(async () => {
       showApp();
-      await ensureTemplateLoaded();
+      await loadCurrentWeek();
+      resetChat();
     })
     .catch(() => localStorage.removeItem(TOKEN_KEY));
+} else {
+  resetChat();
 }
 
 if (!state.slots?.length) {

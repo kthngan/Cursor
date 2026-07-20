@@ -21,7 +21,7 @@ if (-not (Test-Path ".venv")) {
 }
 & ".venv\Scripts\pip.exe" install -q -r requirements.txt
 
-$token = "lewis-2026-test"
+$token = "lulufeijai"
 $match = Select-String -Path ".env" -Pattern '^\s*ACCESS_TOKEN=(.+)$' | Select-Object -First 1
 if ($match -and $match.Matches.Groups[1].Value.Trim()) {
     $token = $match.Matches.Groups[1].Value.Trim()

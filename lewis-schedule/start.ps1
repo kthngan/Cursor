@@ -21,7 +21,7 @@ if (-not $env:WORKSPACE_DIR) {
     $env:WORKSPACE_DIR = $repoRoot
 }
 
-$token = "lewis-2026-test"
+$token = "lulufeijai"
 if (Test-Path ".env") {
     $match = Select-String -Path ".env" -Pattern '^\s*ACCESS_TOKEN=(.+)$' | Select-Object -First 1
     if ($match -and $match.Matches.Groups[1].Value.Trim()) {
@@ -50,7 +50,11 @@ if ($addresses) {
 }
 
 Write-Host ""
-Write-Host "See SETUP-IPHONE.md for full iPhone steps."
+Write-Host "Over the internet (any Wi-Fi/cellular):" -ForegroundColor Yellow
+Write-Host "  .\start-remote.ps1   (Cloudflare HTTPS tunnel)"
+Write-Host "  Or Tailscale — see SETUP-REMOTE.md"
+Write-Host ""
+Write-Host "See SETUP-IPHONE.md for same-Wi-Fi steps."
 Write-Host "Press Ctrl+C to stop."
 Write-Host ""
 

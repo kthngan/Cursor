@@ -119,7 +119,94 @@ button.primary {
 .schedule-grid {
   display: grid;
   gap: 8px;
-  padding: 0 12px 24px;
+  padding: 0 12px 12px;
+}
+
+.chat-panel {
+  margin: 0 12px 24px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: min(42vh, 420px);
+}
+
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  min-height: 120px;
+}
+
+.chat-bubble {
+  max-width: 92%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-bubble.user {
+  align-self: flex-end;
+  background: #2a3f5f;
+}
+
+.chat-bubble.assistant {
+  align-self: flex-start;
+  background: #10141b;
+  border: 1px solid var(--border);
+}
+
+.chat-bubble.system {
+  align-self: center;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 4px 0;
+}
+
+.chat-patch {
+  margin: 0 14px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #10141b;
+  display: grid;
+  gap: 8px;
+}
+
+.chat-patch ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.chat-form {
+  display: flex;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.chat-form input {
+  flex: 1;
+  min-width: 0;
 }
 
 .slot-row {
@@ -132,6 +219,10 @@ button.primary {
   border: 1px solid var(--border);
   background: var(--panel);
   touch-action: manipulation;
+}
+
+.slot-row.has-activity {
+  grid-template-columns: 72px 56px 1fr 110px 1fr;
 }
 
 .slot-row.today {
@@ -165,6 +256,26 @@ button.primary {
   border-radius: 10px;
   border: 1px dashed var(--border);
   background: #10141b;
+}
+
+.chip.activity.empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+}
+
+.chip.time-control {
+  padding: 6px 8px;
+}
+
+.time-select {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0b0d11;
+  color: var(--text);
+  padding: 8px;
+  min-height: 36px;
+  font: inherit;
 }
 
 .chip:focus {
@@ -274,6 +385,23 @@ dialog::backdrop {
   gap: 8px;
 }
 
+.choice-btn.selected {
+  outline: 2px solid var(--accent);
+  background: #2a3f5f;
+  color: var(--text);
+}
+
+.question-send-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.question-send-row button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .import-proposal ul {
   margin: 8px 0 0;
   padding-left: 18px;
@@ -299,6 +427,13 @@ dialog::backdrop {
       "activity activity caregiver";
   }
 
+  .slot-row.has-activity {
+    grid-template-columns: 64px 48px 1fr 1fr;
+    grid-template-areas:
+      "day period period period"
+      "activity activity time caregiver";
+  }
+
   .day-label {
     grid-area: day;
   }
@@ -309,6 +444,10 @@ dialog::backdrop {
 
   .chip.activity {
     grid-area: activity;
+  }
+
+  .chip.time-control {
+    grid-area: time;
   }
 
   .chip.caregiver {

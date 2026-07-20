@@ -92,7 +92,7 @@ Write-Host "Next:" -ForegroundColor Yellow
 Write-Host "  cd $Target\lewis-schedule"
 Write-Host "  .\run-all.ps1"
 Write-Host ""
-Write-Host "Browser: http://127.0.0.1:8790  |  Token: lewis-2026-test"
+Write-Host "Browser: http://127.0.0.1:8790  |  Token: lulufeijai"
 Write-Host "iPhone (same Wi‑Fi): http://<your-PC-IP>:8790"
 Write-Host ""
 

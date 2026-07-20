@@ -31,6 +31,7 @@
     </header>
 
     <section class="toolbar panel">
+      <button id="save-btn" type="button" class="primary">Save</button>
       <button id="reset-template-btn" type="button">Reload this week</button>
       <button id="import-btn" type="button">Import screenshot</button>
       <button id="export-btn" type="button">Export</button>
@@ -39,6 +40,19 @@
     <p id="drag-hint" class="muted hint">Drag a row to swap slots. On phone: tap a row, then tap another to swap.</p>
 
     <section id="schedule-grid" class="schedule-grid" aria-label="Weekly schedule"></section>
+
+    <section id="chat-panel" class="chat-panel panel" aria-label="Schedule chat">
+      <header class="chat-header">
+        <h2>Chat with AI</h2>
+        <button id="chat-clear-btn" type="button" class="ghost">Clear</button>
+      </header>
+      <div id="chat-messages" class="chat-messages"></div>
+      <div id="chat-patch" class="chat-patch hidden"></div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" type="text" placeholder="Ask about the schedule or request a change…" autocomplete="off" />
+        <button id="chat-send-btn" type="submit" class="primary">Send</button>
+      </form>
+    </section>
 
     <input id="screenshot-input" type="file" accept="image/png,image/jpeg,image/webp" hidden />
   </div>

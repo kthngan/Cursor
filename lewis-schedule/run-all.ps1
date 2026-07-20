@@ -32,7 +32,7 @@ if (-not $envMap["WORKSPACE_DIR"]) {
     $envMap["WORKSPACE_DIR"] = $repoRoot
 }
 if (-not $envMap["ACCESS_TOKEN"]) {
-    $envMap["ACCESS_TOKEN"] = "lewis-2026-test"
+    $envMap["ACCESS_TOKEN"] = "lulufeijai"
 }
 if (-not $envMap["HOST"]) {
     $envMap["HOST"] = "0.0.0.0"

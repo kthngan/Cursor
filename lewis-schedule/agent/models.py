@@ -21,6 +21,7 @@ class Slot(BaseModel):
     period: Period
     activity: str | None = ""
     caregiver: str | None = ""
+    time: str | None = ""
 
 
 class ScheduleState(BaseModel):
@@ -54,6 +55,7 @@ class PatchEntry(BaseModel):
     period: Period
     activity: str | None = None
     caregiver: str | None = None
+    time: str | None = None
 
 
 class AgentResponse(BaseModel):
@@ -73,3 +75,25 @@ class HealthResponse(BaseModel):
     ok: bool
     workspace: str
     composer_available: bool
+
+
+class ScheduleSaveResponse(BaseModel):
+    ok: bool
+    week_start: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    schedule: ScheduleState
+    thread_id: str | None = None
+
+
+class ChatAgentReply(BaseModel):
+    message: str = ""
+    patch: list[PatchEntry] = Field(default_factory=list)
+
+
+class ChatApiResponse(BaseModel):
+    thread_id: str
+    reply: ChatAgentReply
+    raw_text: str | None = None

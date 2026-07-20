@@ -6,7 +6,7 @@ Private weekly schedule for Lewis — half-day slots (AM/PM), drag-and-drop edit
 
 ```
 lewis-schedule/
-├── agent/          FastAPI backend (Composer 2.5 via cursor-sdk)
+├── agent/          FastAPI backend (Cursor cloud agents via cursor-sdk)
 ├── web/            Browser UI (Add to Home Screen on iPhone)
 └── templates/      default_template.json
 
@@ -35,7 +35,10 @@ cp .env.example .env
 2. Set in `.env`:
    - `CURSOR_API_KEY` — from [Cursor Dashboard → Integrations](https://cursor.com/dashboard/integrations)
    - `ACCESS_TOKEN` — password for the web app
-   - `WORKSPACE_DIR` — path to this repo root (so Composer loads the skill)
+   - `WORKSPACE_DIR` — path to this repo root (for local skill text / templates)
+   - `CLOUD_REPO_URL` — GitHub repo cloud agents clone (default `https://github.com/kthngan/Cursor`)
+
+Screenshot import and chat use **Cursor cloud agents** (no local Cursor bridge required). Connect this GitHub repo to your Cursor account first.
 
 3. Install and run:
 
@@ -64,7 +67,8 @@ Expose port `8790` with Tailscale, Cloudflare Tunnel, or similar. Keep `ACCESS_T
 | Weekly grid | 14 half-day slots; prev/next week |
 | Template | Load `templates/default_template.json` |
 | Drag-and-drop | Drag rows on desktop; tap-tap swap on phone |
-| Screenshot import | Composer 2.5 reads partial updates, asks questions, returns a patch |
+| Screenshot import | Composer 2.5 / Auto via **Cursor cloud agents** |
+| Chat | Same cloud agent runtime |
 | Export | Copy or Share sheet text for WhatsApp |
 
 ## Composer import

@@ -17,7 +17,7 @@ if (-not $key -or $key -eq "cursor_your_key_here") {
     exit 1
 }
 
-$token = "lewis-2026-test"
+$token = "lulufeijai"
 $tokLine = Select-String -Path (Join-Path $agent ".env") -Pattern '^\s*ACCESS_TOKEN=(.+)$' | Select-Object -First 1
 if ($tokLine -and $tokLine.Matches.Groups[1].Value.Trim()) {
     $token = $tokLine.Matches.Groups[1].Value.Trim()

@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 AGENT="$ROOT/agent"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 PORT="${PORT:-8790}"
-TOKEN="${ACCESS_TOKEN:-lewis-2026-test}"
+TOKEN="${ACCESS_TOKEN:-lulufeijai}"
 
 echo ""
 echo "=== Lewis Schedule — full setup ==="

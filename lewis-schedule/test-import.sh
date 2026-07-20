@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 AGENT="$ROOT/agent"
 FIXTURE="$ROOT/fixtures/test-screenshot.png"
-TOKEN="${ACCESS_TOKEN:-lewis-2026-test}"
+TOKEN="${ACCESS_TOKEN:-lulufeijai}"
 PORT="${PORT:-8790}"
 
 KEY="$(grep '^CURSOR_API_KEY=' "$AGENT/.env" 2>/dev/null | cut -d= -f2- | tr -d '\r' || true)"

@@ -1,20 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
-import uuid
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
-from cursor_sdk import AsyncClient, LocalAgentOptions, SDKImage, UserMessage
+from cursor_sdk import (
+    Agent,
+    AgentOptions,
+    CloudAgentOptions,
+    CloudRepository,
+    SDKImage,
+    UserMessage,
+)
 
-from models import AgentResponse, ImportApiResponse, ScheduleState
+from models import AgentResponse, ChatAgentReply, ChatApiResponse, ImportApiResponse, ScheduleState
 
 
-COMPOSER_MODEL = "composer-2.5"
+AGENT_MODEL = "auto"
 SKILL_PATH = ".cursor/skills/lewis-schedule-import/SKILL.md"
+DEFAULT_CLOUD_REPO = "https://github.com/kthngan/Cursor"
 
 
 def monday_of_week(reference: datetime | None = None) -> str:
@@ -62,6 +72,7 @@ def build_import_prompt(
     parts = [
         "You are updating Lewis's weekly schedule from a partial screenshot.",
         "Follow the skill instructions and return JSON only.",
+        "Do not edit repository files. Only return the JSON response.",
         "",
         "## Skill",
         skill_text,
@@ -92,6 +103,51 @@ def build_import_prompt(
     return "\n".join(parts)
 
 
+def build_chat_prompt(
+    *,
+    schedule: ScheduleState,
+    week_start: str | None,
+    skill_text: str,
+    user_message: str,
+    is_start: bool,
+) -> str:
+    schedule_json = json.dumps(schedule.model_dump(), indent=2)
+    parts = [
+        "You are a helpful assistant for Lewis's weekly care schedule.",
+        "Answer in a friendly, concise way. You can explain the schedule or suggest edits.",
+        "Follow the schedule skill rules when proposing changes.",
+        "Do not edit repository files. Only return the JSON response.",
+        "",
+        "## Skill",
+        skill_text,
+        "",
+        f"## Week start: {week_start or monday_of_week()}",
+        "## Current schedule",
+        schedule_json,
+        "",
+        "## Response format",
+        "Reply with JSON only (no markdown fences):",
+        '{ "message": "your reply to the user", "patch": [] }',
+        "Use patch only when proposing schedule changes (same shape as import proposals).",
+        "Leave patch as [] when you are only chatting or asking a question.",
+        "Valid days: monday..saturday. Valid periods: morning, afternoon.",
+        "Optional time field is HH:MM and only when activity is set.",
+    ]
+    if is_start:
+        parts.extend(["", "## Conversation start", "User message:", user_message])
+    else:
+        parts.extend(["", "## User message", user_message])
+    return "\n".join(parts)
+
+
+def parse_chat_response(text: str) -> ChatAgentReply:
+    try:
+        payload = extract_json_from_text(text)
+        return ChatAgentReply.model_validate(payload)
+    except Exception:
+        return ChatAgentReply(message=text.strip() or "I could not parse a reply.", patch=[])
+
+
 @dataclass
 class ImportSession:
     thread_id: str
@@ -101,11 +157,20 @@ class ImportSession:
 
 
 class ScheduleAgentService:
-    def __init__(self, *, workspace: str, api_key: str) -> None:
+    def __init__(
+        self,
+        *,
+        workspace: str,
+        api_key: str,
+        cloud_repo_url: str | None = None,
+    ) -> None:
         self.workspace = workspace
         self.api_key = api_key
-        self._client: AsyncClient | None = None
-        self._bridge_stack: AsyncExitStack | None = None
+        self.cloud_repo_url = (
+            cloud_repo_url
+            or os.environ.get("CLOUD_REPO_URL")
+            or DEFAULT_CLOUD_REPO
+        ).rstrip("/")
         self._sessions: dict[str, ImportSession] = {}
         self._skill_text: str | None = None
 
@@ -114,52 +179,97 @@ class ScheduleAgentService:
         return bool(self.api_key)
 
     async def startup(self) -> None:
-        if not self.api_key:
-            return
-
-        self._bridge_stack = AsyncExitStack()
-        bridge = await AsyncClient.launch_bridge(workspace=self.workspace)
-        self._client = await self._bridge_stack.enter_async_context(bridge)
         self._skill_text = self._read_skill_text()
 
     async def shutdown(self) -> None:
         for session in list(self._sessions.values()):
             await self.close_session(session.thread_id)
-        if self._bridge_stack is not None:
-            await self._bridge_stack.aclose()
-            self._bridge_stack = None
-            self._client = None
 
     def _read_skill_text(self) -> str:
-        from pathlib import Path
-
         skill_file = Path(self.workspace) / SKILL_PATH
         if skill_file.is_file():
             return skill_file.read_text(encoding="utf-8")
         return "Return schedule import JSON with modes questions, proposal, or noop."
 
-    async def _create_agent_session(self) -> ImportSession:
-        if self._client is None:
-            raise RuntimeError(
-                "Composer is not configured. Set CURSOR_API_KEY in lewis-schedule/agent/.env"
-            )
-
-        stack = AsyncExitStack()
-        agent_handle = await self._client.agents.create(
-            model=COMPOSER_MODEL,
-            api_key=self.api_key,
-            local=LocalAgentOptions(cwd=self.workspace),
+    def _cloud_options(self) -> CloudAgentOptions:
+        return CloudAgentOptions(
+            repos=[
+                CloudRepository(
+                    url=self.cloud_repo_url,
+                    starting_ref="main",
+                )
+            ],
+            auto_create_pr=False,
+            skip_reviewer_request=True,
         )
-        agent = await stack.enter_async_context(agent_handle)
-        thread_id = str(uuid.uuid4())
+
+    def _create_cloud_agent_sync(self) -> Any:
+        if not self.api_key:
+            raise RuntimeError(
+                "Cloud agent is not configured. Set CURSOR_API_KEY in lewis-schedule/agent/.env"
+            )
+        return Agent.create(
+            model=AGENT_MODEL,
+            api_key=self.api_key,
+            name="Lewis Schedule",
+            cloud=self._cloud_options(),
+        )
+
+    def _resume_cloud_agent_sync(self, agent_id: str) -> Any:
+        if not self.api_key:
+            raise RuntimeError(
+                "Cloud agent is not configured. Set CURSOR_API_KEY in lewis-schedule/agent/.env"
+            )
+        return Agent.resume(
+            agent_id,
+            AgentOptions(api_key=self.api_key),
+        )
+
+    def _close_agent_sync(self, agent: Any) -> None:
+        close = getattr(agent, "close", None)
+        if callable(close):
+            close()
+
+    def _send_sync(
+        self,
+        *,
+        agent: Any,
+        prompt: str,
+        image_base64: str | None = None,
+        mime_type: str = "image/jpeg",
+    ) -> str:
+        images = []
+        if image_base64:
+            images.append(SDKImage.from_data(image_base64, mime_type))
+        run = agent.send(UserMessage(text=prompt, images=images or None))
+        return run.text()
+
+    async def _create_agent_session(self) -> ImportSession:
+        agent = await asyncio.to_thread(self._create_cloud_agent_sync)
+        thread_id = str(getattr(agent, "agent_id", "") or "")
+        if not thread_id:
+            raise RuntimeError("Cloud agent did not return an agent_id")
+        stack = AsyncExitStack()
+        session = ImportSession(thread_id=thread_id, agent=agent, stack=stack)
+        self._sessions[thread_id] = session
+        return session
+
+    async def _get_or_resume_session(self, thread_id: str) -> ImportSession:
+        existing = self._sessions.get(thread_id)
+        if existing is not None:
+            return existing
+        agent = await asyncio.to_thread(self._resume_cloud_agent_sync, thread_id)
+        stack = AsyncExitStack()
         session = ImportSession(thread_id=thread_id, agent=agent, stack=stack)
         self._sessions[thread_id] = session
         return session
 
     async def close_session(self, thread_id: str) -> None:
         session = self._sessions.pop(thread_id, None)
-        if session is not None:
-            await session.stack.aclose()
+        if session is None:
+            return
+        await asyncio.to_thread(self._close_agent_sync, session.agent)
+        await session.stack.aclose()
 
     async def _send_to_agent(
         self,
@@ -169,14 +279,13 @@ class ScheduleAgentService:
         image_base64: str | None = None,
         mime_type: str = "image/jpeg",
     ) -> str:
-        images = []
-        if image_base64:
-            images.append(SDKImage.from_data(image_base64, mime_type))
-
-        run = await session.agent.send(
-            UserMessage(text=prompt, images=images or None)
+        return await asyncio.to_thread(
+            self._send_sync,
+            agent=session.agent,
+            prompt=prompt,
+            image_base64=image_base64,
+            mime_type=mime_type,
         )
-        return await run.text()
 
     async def start_import(
         self,
@@ -214,9 +323,10 @@ class ScheduleAgentService:
         week_start: str | None,
         user_message: str,
     ) -> ImportApiResponse:
-        session = self._sessions.get(thread_id)
-        if session is None:
-            raise KeyError(f"Unknown import thread: {thread_id}")
+        try:
+            session = await self._get_or_resume_session(thread_id)
+        except Exception as exc:
+            raise KeyError(f"Unknown import thread: {thread_id}") from exc
 
         prompt = build_import_prompt(
             schedule=schedule,
@@ -230,5 +340,39 @@ class ScheduleAgentService:
         return ImportApiResponse(
             thread_id=thread_id,
             agent=agent,
+            raw_text=raw_text,
+        )
+
+    async def chat(
+        self,
+        *,
+        message: str,
+        schedule: ScheduleState,
+        week_start: str | None,
+        thread_id: str | None = None,
+    ) -> ChatApiResponse:
+        if thread_id:
+            try:
+                session = await self._get_or_resume_session(thread_id)
+                is_start = False
+            except Exception:
+                session = await self._create_agent_session()
+                is_start = True
+        else:
+            session = await self._create_agent_session()
+            is_start = True
+
+        prompt = build_chat_prompt(
+            schedule=schedule,
+            week_start=week_start,
+            skill_text=self._skill_text or "",
+            user_message=message,
+            is_start=is_start,
+        )
+        raw_text = await self._send_to_agent(session=session, prompt=prompt)
+        reply = parse_chat_response(raw_text)
+        return ChatApiResponse(
+            thread_id=session.thread_id,
+            reply=reply,
             raw_text=raw_text,
         )

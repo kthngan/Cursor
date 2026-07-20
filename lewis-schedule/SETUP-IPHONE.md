@@ -24,7 +24,7 @@ Set these values:
 
 | Variable | Value |
 |----------|--------|
-| `ACCESS_TOKEN` | `lewis-2026-test` (or your own password) |
+| `ACCESS_TOKEN` | `lulufeijai` (or your own password) |
 | `HOST` | `0.0.0.0` |
 | `WORKSPACE_DIR` | `C:\Users\user\Documents\Cursor` |
 | `CURSOR_API_KEY` | Your key from [Cursor Dashboard → Integrations](https://cursor.com/dashboard/integrations) — **only needed for screenshot import** |
@@ -43,7 +43,7 @@ Leave this window open. You should see:
 ```
 Open http://127.0.0.1:8790
 iPhone (same Wi-Fi): http://192.168.x.x:8790
-Access token: lewis-2026-test
+Access token: lulufeijai
 ```
 
 Note the `192.168.x.x` address — that is what you use on your iPhone.
@@ -60,7 +60,7 @@ New-NetFirewallRule -DisplayName "Lewis Schedule 8790" -Direction Inbound -Proto
 
 1. Connect iPhone to the **same Wi-Fi** as the PC.
 2. Safari → `http://192.168.x.x:8790` (use the IP from step 3).
-3. Access token: **`lewis-2026-test`**
+3. Access token: **`lulufeijai`**
 4. Tap **Connect**.
 
 The confirmed schedule for **week of 14 Jul 2026** loads automatically.

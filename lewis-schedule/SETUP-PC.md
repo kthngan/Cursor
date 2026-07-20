@@ -52,9 +52,13 @@ powershell -ExecutionPolicy Bypass -File .\run-all.ps1
 | What | Value |
 |------|--------|
 | Local URL | http://127.0.0.1:8790 |
-| Access token | `lewis-2026-test` |
+| Access token | `lulufeijai` |
+| Same Wi-Fi | `.\start.ps1` → open `http://192.168.x.x:8790` on iPhone |
+| **Internet (any network)** | `.\start-remote.ps1` → use the `https://….trycloudflare.com` URL |
 | Screenshot import | Add `CURSOR_API_KEY` to `lewis-schedule\agent\.env` |
-| iPhone (offline) | https://kthngan.github.io/Cursor/v6.html |
+| iPhone (offline, no import) | https://kthngan.github.io/Cursor/v6.html |
+
+See **[SETUP-REMOTE.md](./SETUP-REMOTE.md)** for Tailscale (stable URL) and auto-start after reboot.
 
 ## Troubleshooting
 
