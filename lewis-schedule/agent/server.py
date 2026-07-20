@@ -75,6 +75,7 @@ async def health(request: Request) -> HealthResponse:
         ok=True,
         workspace=str(WORKSPACE),
         composer_available=service.composer_available,
+        warm_agent_ready=service.warm_agent_ready,
     )
 
 

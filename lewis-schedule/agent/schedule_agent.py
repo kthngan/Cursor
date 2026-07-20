@@ -154,6 +154,7 @@ class ImportSession:
     agent: Any
     stack: AsyncExitStack
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    warmed: bool = False
 
 
 class ScheduleAgentService:
@@ -173,15 +174,45 @@ class ScheduleAgentService:
         ).rstrip("/")
         self._sessions: dict[str, ImportSession] = {}
         self._skill_text: str | None = None
+        self._warm_chat: ImportSession | None = None
+        self._warm_import: ImportSession | None = None
+        self._warm_lock = asyncio.Lock()
+        self._warm_ready = False
 
     @property
     def composer_available(self) -> bool:
         return bool(self.api_key)
 
+    @property
+    def warm_agent_ready(self) -> bool:
+        return self._warm_ready
+
     async def startup(self) -> None:
         self._skill_text = self._read_skill_text()
+        if not self.api_key:
+            return
+        # Warm in background so the HTTP server can accept traffic immediately.
+        asyncio.create_task(self._warmup_on_boot())
+
+    async def _warmup_on_boot(self) -> None:
+        await asyncio.gather(
+            self._refill_warm_chat(ping=True),
+            self._refill_warm_import(ping=False),
+            return_exceptions=True,
+        )
 
     async def shutdown(self) -> None:
+        async with self._warm_lock:
+            warm_ids = []
+            if self._warm_chat is not None:
+                warm_ids.append(self._warm_chat.thread_id)
+                self._warm_chat = None
+            if self._warm_import is not None:
+                warm_ids.append(self._warm_import.thread_id)
+                self._warm_import = None
+            self._warm_ready = False
+        for thread_id in warm_ids:
+            await self.close_session(thread_id)
         for session in list(self._sessions.values()):
             await self.close_session(session.thread_id)
 
@@ -254,6 +285,71 @@ class ScheduleAgentService:
         self._sessions[thread_id] = session
         return session
 
+    async def _ping_agent(self, session: ImportSession) -> None:
+        """First send wakes the cloud VM so later chat feels faster."""
+        await self._send_to_agent(
+            session=session,
+            prompt=(
+                "You are warming up for Lewis Schedule. "
+                'Reply with JSON only: {"message":"ready","patch":[]}'
+            ),
+        )
+
+    async def _refill_warm_chat(self, *, ping: bool = False) -> None:
+        if not self.api_key:
+            return
+        try:
+            session = await self._create_agent_session()
+            if ping:
+                await self._ping_agent(session)
+                session.warmed = True
+            async with self._warm_lock:
+                old = self._warm_chat
+                self._warm_chat = session
+                self._warm_ready = True
+            if old is not None and old.thread_id != session.thread_id:
+                await self.close_session(old.thread_id)
+        except Exception:
+            async with self._warm_lock:
+                if self._warm_chat is None:
+                    self._warm_ready = False
+            raise
+
+    async def _refill_warm_import(self, *, ping: bool = False) -> None:
+        if not self.api_key:
+            return
+        try:
+            session = await self._create_agent_session()
+            if ping:
+                await self._ping_agent(session)
+            async with self._warm_lock:
+                old = self._warm_import
+                self._warm_import = session
+            if old is not None and old.thread_id != session.thread_id:
+                await self.close_session(old.thread_id)
+        except Exception:
+            pass
+
+    async def _take_warm_chat(self) -> ImportSession:
+        async with self._warm_lock:
+            session = self._warm_chat
+            self._warm_chat = None
+            self._warm_ready = self._warm_chat is not None
+        if session is None:
+            session = await self._create_agent_session()
+        # Refill spare agent in the background for the next chat.
+        asyncio.create_task(self._refill_warm_chat(ping=True))
+        return session
+
+    async def _take_warm_import(self) -> ImportSession:
+        async with self._warm_lock:
+            session = self._warm_import
+            self._warm_import = None
+        if session is None:
+            session = await self._create_agent_session()
+        asyncio.create_task(self._refill_warm_import(ping=False))
+        return session
+
     async def _get_or_resume_session(self, thread_id: str) -> ImportSession:
         existing = self._sessions.get(thread_id)
         if existing is not None:
@@ -295,7 +391,7 @@ class ScheduleAgentService:
         image_base64: str,
         mime_type: str,
     ) -> ImportApiResponse:
-        session = await self._create_agent_session()
+        session = await self._take_warm_import()
         prompt = build_import_prompt(
             schedule=schedule,
             week_start=week_start,
@@ -356,11 +452,11 @@ class ScheduleAgentService:
                 session = await self._get_or_resume_session(thread_id)
                 is_start = False
             except Exception:
-                session = await self._create_agent_session()
-                is_start = True
+                session = await self._take_warm_chat()
+                is_start = not session.warmed
         else:
-            session = await self._create_agent_session()
-            is_start = True
+            session = await self._take_warm_chat()
+            is_start = not session.warmed
 
         prompt = build_chat_prompt(
             schedule=schedule,

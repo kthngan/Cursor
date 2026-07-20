@@ -75,6 +75,7 @@ class HealthResponse(BaseModel):
     ok: bool
     workspace: str
     composer_available: bool
+    warm_agent_ready: bool = False
 
 
 class ScheduleSaveResponse(BaseModel):
